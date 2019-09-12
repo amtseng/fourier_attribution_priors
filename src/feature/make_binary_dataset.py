@@ -22,7 +22,10 @@ def config():
     reference_fasta = "/users/amtseng/genomes/hg19.fasta"
 
     # For each input sequence in the raw data, center it and pad to this length 
-    input_seq_centered_size = 1000
+    input_length = 1000
+
+    # One-hot encoding has this depth
+    input_depth = 4
 
     # Batch size; will be multiplied by two if augmentation is done
     batch_size = 128
@@ -34,7 +37,7 @@ def config():
     negative_stride = 13
 
     # Number of workers for the data loader
-    num_workers = 10
+    num_workers = 2
 
     # Dataset seed (for shuffling)
     dataset_seed = None
@@ -244,21 +247,6 @@ class CoordsDownsampler(torch.utils.data.sampler.Sampler):
             index * self.batch_size : (index + 1) * self.batch_size
         ]]
 
-    # def __iter__(self):
-    #     """
-    #     Returns a generator for the downsampled and shuffled indices. This will
-    #     perform downsampling and shuffling right before returning the iterator.
-    #     Each item in the iterable is a batch of coordinate tuples (i.e. a
-    #     partial Pandas MultiIndex).
-    #     """
-    #     # Perform downsampling on positives and negatives, and maybe shuffle
-    #     self._shuffle_downsample()
-    #     return (
-    #         self.coords[self.ds_coord_inds[
-    #             index * self.batch_size : (index + 1) * self.batch_size
-    #         ]] for index in range(self.__len__())
-    #     )
-
     def __len__(self):
         num_pos = len(
             range(self.pos_offset, len(self.pos_coord_inds), self.pos_stride)
@@ -323,6 +311,7 @@ class CoordDataset(torch.utils.data.IterableDataset):
         vals = self.coords_to_vals(coords_batch)
         if self.revcomp:
             vals = np.concatenate([vals, vals])
+        vals = vals.astype(np.int)
 
         if self.return_coords:
             coords = coords_batch.values
@@ -334,21 +323,37 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
     def __iter__(self):
         """
-        Returns an iterator over the batches.
+        Returns an iterator over the batches. If the dataset iterator is called
+        from multiple workers, each worker will be give a shard of the full
+        range.
         """
-        self.coords_batcher.on_epoch_start()
-        return (self.get_batch(i) for i in range(len(self.coords_batcher)))
+        worker_info = torch.utils.data.get_worker_info()
+        num_batches = len(self.coords_batcher)
+        if worker_info is None:
+            # In single-processing mode
+            start, end = 0, num_batches
+        else:
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+            shard_size = int(np.ceil(num_batches / num_workers))
+            start = shard_size * worker_id
+            end = min(start + shard_size, num_batches)
+        return (self.get_batch(i) for i in range(start, end))
 
     def __len__(self):
         return len(self.coords_batcher)
     
-    def on_epoch_end(self):
-        self.coords_batcher.on_epoch_end()
+    def on_epoch_start(self):
+        """
+        This should be called manually before the beginning of every epoch (i.e.
+        before the iteration begins).
+        """
+        self.coords_batcher.on_epoch_start()
 
 
 @dataset_ex.capture
 def data_loader_from_bedfile(
-    bedfile_path, batch_size, reference_fasta, input_seq_centered_size,
+    bedfile_path, batch_size, reference_fasta, input_length,
     positive_stride, negative_stride, num_workers, convert_states, dataset_seed,
     hastitle=True, augment=True, shuffle=True, return_coords=False
 ):
@@ -407,7 +412,7 @@ def data_loader_from_bedfile(
 
     # Maps set of coordinates to 1-hot encoding, padded
     coords_to_seq = CoordsToSeq(
-        reference_fasta, center_size_to_use=input_seq_centered_size
+        reference_fasta, center_size_to_use=input_length
     )
 
     # Dataset
@@ -440,7 +445,7 @@ def main():
     basepath = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/labels/"
     bedfile = os.path.join(basepath, "%s.train.labels.tsv.gz" % "SPI1")
 
-    # bedfile = "/users/amtseng/tfmodisco/data/processed/DREAM/tests/SPI1_test_2000.tsv.gz"
+    bedfile = "/users/amtseng/tfmodisco/data/processed/DREAM/tests/SPI1_test_2000.tsv.gz"
     
     loader = data_loader_from_bedfile(
         bedfile

@@ -1,7 +1,7 @@
 import torch
 import math
 import numpy as np
-from util import place_tensor
+from model.util import place_tensor
 
 class BinaryTFBindingPredictor(torch.nn.Module):
 
@@ -55,15 +55,23 @@ class BinaryTFBindingPredictor(torch.nn.Module):
 
         # Define the convolutional layers
         depths = [input_depth] + conv_depths
-        self.conv_layers = [
-            torch.nn.Conv1d(
-                in_channels=depths[i],
-                out_channels=depths[i + 1],
-                kernel_size=conv_filter_sizes[i],
-                stride=conv_stride,
-                padding=0  # No padding (AKA "valid")
-            ) for i in range(num_conv_layers)
-        ]
+        self.conv_layers = torch.nn.ModuleList()
+        for i in range(num_conv_layers):
+            self.conv_layers.append(
+                torch.nn.Conv1d(
+                    in_channels=depths[i],
+                    out_channels=depths[i + 1],
+                    kernel_size=conv_filter_sizes[i],
+                    stride=conv_stride,
+                    padding=0  # No padding (AKA "valid")
+                )
+            )
+            self.conv_layers.append(torch.nn.ReLU())
+            if batch_norm:
+                self.conv_layers.append(
+                    torch.nn.BatchNorm1d(depths[i + 1])
+                )
+            self.conv_layers.append(torch.nn.Dropout(conv_drop_rate))
 
         # Compute sizes of the convolutional outputs
         conv_output_sizes = []
@@ -76,17 +84,6 @@ class BinaryTFBindingPredictor(torch.nn.Module):
             next_size = (conv_depths[i], next_length)
             conv_output_sizes.append(next_size)
             last_size = next_size
-
-        self.conv_activation = torch.nn.ReLU()
-
-        if batch_norm:
-            # Define the batch norm layers after each convolutional layer
-            self.conv_batch_norms = [
-                torch.nn.BatchNorm1d(depth) for depth in conv_depths
-            ]
-
-        # Define the convolutional dropout layers
-        self.conv_dropout = torch.nn.Dropout(conv_drop_rate)
 
         # Define the max pooling layer
         self.max_pool_layer = torch.nn.MaxPool1d(
@@ -105,20 +102,17 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         
         # Define the fully connected layers
         dims = [pool_output_size[0] * pool_output_size[1]] + fc_sizes
-        self.fc_layers = [
-            torch.nn.Linear(dims[i], dims[i + 1]) for i in range(num_fc_layers)
-        ]
-
-        self.fc_activation = torch.nn.ReLU()
-
-        if batch_norm:
-            # Define the batch norm layers after each fully connected layer
-            self.fc_batch_norms = [
-                torch.nn.BatchNorm1d(dim) for dim in fc_sizes
-            ]
-
-        # Define the fully connected dropout layers
-        self.fc_dropout = torch.nn.Dropout(fc_drop_rate)
+        self.fc_layers = torch.nn.ModuleList()
+        for i in range(num_fc_layers):
+            self.fc_layers.append(
+                torch.nn.Linear(dims[i], dims[i + 1])
+            )
+            self.fc_layers.append(torch.nn.ReLU())
+            if batch_norm:
+                self.fc_layers.append(
+                    torch.nn.BatchNorm1d(dims[i + 1])
+                )
+            self.fc_layers.append(torch.nn.Dropout(fc_drop_rate))
 
         # Map last fully connected layer to final outputs
         self.out_map_fc = torch.nn.Linear(fc_sizes[-1], num_outputs)
@@ -144,35 +138,25 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         input_length = input_seqs.size(2)
 
         # Run through convolutions, activations, and batch norm
-        conv_input = input_seqs
-        for i in range(self.num_conv_layers):
-            conv_output = self.conv_layers[i](conv_input)
-            activated = self.conv_activation(conv_output)
-            if self.batch_norm:
-                activated = self.conv_batch_norms[i](activated)
-            dropped = self.conv_dropout(activated)
-            conv_input = dropped
-        all_conv_output = dropped
+        x = input_seqs
+        for layer in self.conv_layers:
+            x = layer(x)
+        conv_output = x
 
         # Perform max pooling
-        pooled = self.max_pool_layer(all_conv_output)
+        pooled = self.max_pool_layer(conv_output)
 
         # Flatten
         flattened = pooled.view(batch_size, -1)
 
         # Run through fully connected layers, activations, and batch norm
-        fc_input = flattened
-        for i in range(self.num_fc_layers):
-            fc_output = self.fc_layers[i](fc_input)
-            activated = self.fc_activation(fc_output)
-            if self.batch_norm:
-                activated = self.fc_batch_norms[i](activated)
-            dropped = self.fc_dropout(activated)
-            fc_input = dropped
-        all_fc_output = dropped
+        x = flattened
+        for layer in self.fc_layers:
+            x = layer(x)
+        fc_output = x
 
         # Run through last layer to get logits
-        logits = self.out_map_fc(all_fc_output)
+        logits = self.out_map_fc(fc_output)
 
         probs = self.sigmoid(logits)
         return probs
