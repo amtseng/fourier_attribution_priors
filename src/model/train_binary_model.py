@@ -72,10 +72,10 @@ def config(dataset):
     early_stopping = True
 
     # Number of epochs to save validation loss (set to 1 for one step only)
-    early_stop_hist_len = 5
+    early_stop_hist_len = 3
 
     # Minimum improvement in loss at least once over history to not stop early
-    early_stop_min_delta = 0.0001
+    early_stop_min_delta = 0.001
 
     # Training seed
     train_seed = None # 20190905

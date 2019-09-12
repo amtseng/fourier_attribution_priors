@@ -37,7 +37,7 @@ def config():
     negative_stride = 13
 
     # Number of workers for the data loader
-    num_workers = 2
+    num_workers = 10
 
     # Dataset seed (for shuffling)
     dataset_seed = None
