@@ -88,6 +88,9 @@ def config(dataset):
     
     # Imported from make_binary_dataset
     output_ignore_value = dataset["output_ignore_value"]
+    
+    # Imported from make_binary_dataset
+    val_neg_downsample = dataset["negative_stride"]
 
 
 @train_ex.capture
@@ -206,7 +209,8 @@ def eval_epoch(val_loader, model, output_ignore_value):
 @train_ex.capture
 def train(
     train_loader, val_loader, num_epochs, learning_rate, early_stopping,
-    early_stop_hist_len, early_stop_min_delta, train_seed, _run
+    early_stop_hist_len, early_stop_min_delta, train_seed, val_neg_downsample,
+    output_ignore_value, _run
 ):
     """
     Trains the network for the given training and validation data.
@@ -254,6 +258,12 @@ def train(
                 epoch + 1, val_epoch_loss
             )
         )
+
+        # Compute evaluation metrics and log them
+        metrics = performance.compute_evaluation_metrics(
+            true_vals, pred_vals, val_neg_downsample, output_ignore_value
+        )
+        performance.log_evaluation_metrics(metrics, logger, _run)
             
         # Save trained model for the epoch
         savepath = os.path.join(
