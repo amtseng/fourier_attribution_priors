@@ -1,6 +1,7 @@
 import torch
 import logging
 import sys
+import sacred
 
 def make_logger(name):
     logger = logging.getLogger(name)
@@ -22,6 +23,28 @@ def place_tensor(tensor):
     if torch.cuda.is_available():
         return tensor.cuda()
     return tensor
+
+
+def sanitize_sacred_arguments(args):
+    """
+    This function goes through and sanitizes the arguments to native types.
+    Lists and dictionaries passed through Sacred automatically become
+    ReadOnlyLists and ReadOnlyDicts. This function will go through and
+    recursively change them to native lists and dicts.
+    `args` can be a single token, a list of items, or a dictionary of items.
+    The return type will be a native token, list, or dictionary.
+    """
+    if isinstance(args, list):  # Captures ReadOnlyLists
+        return [
+            sanitize_sacred_arguments(item) for item in args
+        ]
+    elif isinstance(args, dict):  # Captures ReadOnlyDicts
+        return {
+            str(key) : sanitize_sacred_arguments(val) \
+            for key, val in args.items()
+        }
+    else:  # Return the single token as-is
+        return args
 
 
 def save_model(model, save_path):

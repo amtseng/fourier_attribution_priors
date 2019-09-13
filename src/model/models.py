@@ -1,7 +1,7 @@
 import torch
 import math
 import numpy as np
-from model.util import place_tensor
+from model.util import place_tensor, sanitize_sacred_arguments
 
 class BinaryTFBindingPredictor(torch.nn.Module):
 
@@ -40,6 +40,7 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         self.creation_args = locals()
         del self.creation_args["self"]
         del self.creation_args["__class__"]
+        self.creation_args = sanitize_sacred_arguments(self.creation_args)
 
         assert len(conv_filter_sizes) == num_conv_layers
         assert len(conv_depths) == num_conv_layers
