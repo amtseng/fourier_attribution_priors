@@ -423,7 +423,8 @@ def data_loader_from_bedfile(
 
     # Dataset loader: dataset is iterable and already returns batches
     loader = torch.utils.data.DataLoader(
-        dataset, batch_size=None, num_workers=num_workers
+        dataset, batch_size=None, num_workers=num_workers,
+        collate_fn=lambda x: x
     )
 
     return loader

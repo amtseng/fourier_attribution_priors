@@ -1,6 +1,6 @@
 import numpy as np
-import torch
 import sacred
+import torch
 import math
 import tqdm
 import os
@@ -63,7 +63,7 @@ def config(dataset):
     fc_drop_rate = 0.2
 
     # Number of training epochs
-    num_epochs = 300
+    num_epochs = 10
 
     # Learning rate
     learning_rate = 0.001
@@ -118,6 +118,7 @@ def create_model(
         conv_drop_rate=conv_drop_rate,
         fc_drop_rate=fc_drop_rate
     )
+
     return bin_model
 
 
@@ -140,8 +141,8 @@ def train_epoch(
 
     batch_losses = []
     for input_seqs, output_vals in t_iter:
-        input_seqs = util.place_tensor(input_seqs).float()
-        output_vals = util.place_tensor(output_vals).float()
+        input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
+        output_vals = util.place_tensor(torch.tensor(output_vals)).float()
         
         # Make channels come first in input
         input_seqs = torch.transpose(input_seqs, 1, 2)
@@ -184,8 +185,8 @@ def eval_epoch(val_loader, model, output_ignore_value):
     for input_seqs, output_vals in t_iter:
         true_val_arr.append(output_vals)
 
-        input_seqs = util.place_tensor(input_seqs).float()
-        output_vals = util.place_tensor(output_vals).float()
+        input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
+        output_vals = util.place_tensor(torch.tensor(output_vals)).float()
 
         # Make channels come first in input
         input_seqs = torch.transpose(input_seqs, 1, 2)
@@ -202,7 +203,7 @@ def eval_epoch(val_loader, model, output_ignore_value):
         )
 
     pred_vals = torch.cat(pred_val_arr).numpy()
-    true_vals = torch.cat(true_val_arr).numpy()
+    true_vals = np.concatenate(true_val_arr)
 
     return np.mean(batch_losses), pred_vals, true_vals
 
@@ -264,7 +265,7 @@ def train(
             true_vals, pred_vals, val_neg_downsample, output_ignore_value
         )
         performance.log_evaluation_metrics(metrics, logger, _run)
-            
+
         # Save trained model for the epoch
         savepath = os.path.join(
             output_dir, "model_ckpt_epoch_%d.pt" % (epoch + 1)
