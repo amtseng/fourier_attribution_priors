@@ -82,9 +82,7 @@ def precision_recall_scores(precis, recall, thresholds, pos_thresh=0.5):
     return precis[thresh_ind], recall[thresh_ind]
 
 
-def compute_evaluation_metrics(
-    true_values, pred_values, val_neg_downsample, output_ignore_value
-):
+def compute_evaluation_metrics(true_values, pred_values, val_neg_downsample):
     """
     For the given parallel 2D NumPy arrays containing true and predicted values
     (shape num_samples x num_tasks), computes various evaluation metrics and
@@ -96,8 +94,8 @@ def compute_evaluation_metrics(
         Returns a set of metrics, but for a specific task. Inputs are parallel
         NumPy arrays of scalars.
         """
-        # Keep the output values where the true output isn't to be ignored
-        mask = true_vec != output_ignore_value
+        # Ignore output values that are not 0 or 1
+        mask = (true_vec == 0) | (true_vec == 1)
         true_vec, pred_vec = true_vec[mask], pred_vec[mask]
         pred_vec_round = np.round(pred_vec)
 

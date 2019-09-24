@@ -163,24 +163,72 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         return probs
 
 
-    def loss(self, true_vals, probs, ignore_value=None):
+    def prediction_loss(self, true_vals, probs):
         """
         Computes the binary cross-entropy loss.
         Arguments:
             `true_seqs`: a B x C tensor, where B is the batch size and C is the
                 number of output tasks, containing the true binary values
             `probs`: a B x C tensor containing the predicted probabilities
-            `ignore_value`: if specified, ignores this value in the `true_vals`
-                when computing the loss
         Returns a tensor scalar that is the loss for the batch.
         """
         assert true_vals.size() == probs.size()
         true_vals_flat = torch.flatten(true_vals)
         probs_flat = torch.flatten(probs)
 
-        if ignore_value is not None:
-            mask = true_vals_flat != ignore_value
-            true_vals_flat = true_vals_flat[mask]
-            probs_flat = probs_flat[mask]
+        # Ignore anything that's not 0 or 1
+        mask = (true_vals_flat == 0) | (true_vals_flat == 1)
+        true_vals_flat = true_vals_flat[mask]
+        probs_flat = probs_flat[mask]
 
         return self.bce_loss(probs_flat, true_vals_flat)
+
+
+    def att_prior_loss(self, true_vals, input_grads, pos_limit, pos_weight):
+        """
+        Computes an attribution prior loss for some given training examples.
+        Arguments:
+            `true_vals`: a B x C tensor, where B is the batch size and C is the
+                number of output tasks, containing the true binary values
+            `input_grads`: a B x C x L x D tensor, where B is the batch size, C
+                is the number of output tasks, L is the length of the input, and
+                D is the dimensionality of each input base; this needs to be the
+                gradients of the input with respect to each output task
+            `pos_limit`: the maximum integer frequency index, k, to consider for
+                the positive loss; this corresponds to a frequency cut-off of
+                pi * k / L; k should be less than L / 2
+            `pos_weight`: the amount to weight the positive loss by, to give it
+                a similar scale as the negative loss
+        Returns a single scalar Tensor consisting of the positive and negative
+        losses together.
+        """
+        relu = torch.nn.ReLU()
+        max_rect_grads = torch.max(relu(input_grads), dim=3)[0]
+
+        neg_grads = max_rect_grads[true_vals == 0]
+        pos_grads = max_rect_grads[true_vals == 1]
+
+        # Loss for positives
+        if pos_grads.nelement():
+            pos_grads_comp = torch.stack(
+                [pos_grads, place_tensor(torch.zeros(pos_grads.size()))], dim=2
+            )
+            # Magnitude of the Fourier coefficients:
+            pos_fft = torch.fft(pos_grads_comp, 1)
+            pos_mags = torch.norm(pos_fft, dim=2)
+            pos_mags /= torch.sum(pos_mags, dim=1, keepdim=True)  # Normalize
+            # Cut off DC and high-frequency components:
+            pos_mags = pos_mags[:, 1:pos_limit]
+            pos_score = torch.sum(pos_mags, dim=1)
+            pos_loss = 1 - pos_score
+            pos_loss_mean = torch.mean(pos_loss)
+        else:
+            pos_loss_mean = 0
+        # Loss for negatives
+        if neg_grads.nelement():
+            neg_loss = torch.sum(neg_grads, dim=1)
+            neg_loss_mean = torch.mean(neg_loss)
+        else:
+            neg_loss_mean = 0
+
+        return (pos_weight * pos_loss_mean) + neg_loss_mean

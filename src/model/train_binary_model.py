@@ -53,6 +53,15 @@ def config(dataset):
     # Number of outputs to predict
     num_outputs = 1
 
+    # Weight to use for attribution prior loss; set to 0 to not use att. priors
+    att_prior_loss_weight = 1.0
+
+    # Maximum frequency integer to consider for a positive attribution prior
+    att_prior_pos_limit = 160
+
+    # Weight for positives within the attribution prior loss
+    att_prior_pos_weight = 0.1
+
     # Whether to apply batch normalization
     batch_norm = True
 
@@ -85,9 +94,6 @@ def config(dataset):
     
     # Imported from make_binary_dataset
     input_depth = dataset["input_depth"]
-    
-    # Imported from make_binary_dataset
-    output_ignore_value = dataset["output_ignore_value"]
     
     # Imported from make_binary_dataset
     val_neg_downsample = dataset["negative_stride"]
@@ -123,9 +129,37 @@ def create_model(
 
 
 @train_ex.capture
-def train_epoch(
-    train_loader, model, optimizer, output_ignore_value
+def model_loss(
+    model, true_vals, probs, input_grads, att_prior_loss_weight,
+    att_prior_pos_limit, att_prior_pos_weight
 ):
+    """
+    Computes the loss for the model.
+    Arguments:
+        `model`: the model being trained
+        `true_seqs`: a B x C tensor, where B is the batch size and C is the
+            number of output tasks, containing the true binary values
+        `probs`: a B x C tensor containing the predicted probabilities
+        
+        `input_grads`: a B x C x L x D tensor, where B is the batch size, C is
+            the number of output tasks, L is the length of the input, and D is
+            the dimensionality of each input base; this needs to be the
+            gradients of the input with respect to each output task
+    Returns a scalar Tensor containing the loss for the given batch.
+    """
+    pred_loss = model.prediction_loss(true_vals, probs)
+   
+    if not att_prior_loss_weight:
+        return pred_loss
+    
+    att_prior_loss = model.att_prior_loss(
+        true_vals, input_grads, att_prior_pos_limit, att_prior_pos_weight
+    )
+    return pred_loss + (att_prior_loss_weight * att_prior_loss)
+
+
+@train_ex.capture
+def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
     """
     Runs the data from the training loader once through the model, and performs
     backpropagation. Returns the loss for the epoch.
@@ -146,12 +180,27 @@ def train_epoch(
         
         # Make channels come first in input
         input_seqs = torch.transpose(input_seqs, 1, 2)
+        if att_prior_loss_weight > 0:
+            input_seqs.requires_grad = True  # Set gradient required
 
         optimizer.zero_grad() # Clear gradients from previous batch
 
         probs = model(input_seqs)
 
-        loss = model.loss(output_vals, probs, output_ignore_value)
+        if att_prior_loss_weight > 0:
+            probs.backward(
+                util.place_tensor(torch.ones(probs.size())),
+                retain_graph=True
+            )
+            input_grads = input_seqs.grad.view(
+                probs.size() + input_seqs.size()[1:]
+            ).transpose(2, 3)
+            input_seqs.requires_grad = False  # Reset gradient required
+            optimizer.zero_grad()  # Clear gradients
+        else:
+            input_grads = None
+
+        loss = model_loss(model, output_vals, probs, input_grads)
         loss_value = loss.item()
         loss.backward()  # Compute gradient
         optimizer.step()  # Update weights through backprop
@@ -165,7 +214,7 @@ def train_epoch(
 
 
 @train_ex.capture
-def eval_epoch(val_loader, model, output_ignore_value):
+def eval_epoch(val_loader, model, att_prior_loss_weight):
     """
     Runs the data from the validation loader once through the model, and
     saves the output results. Returns the loss for the epoch, a NumPy array of
@@ -183,6 +232,7 @@ def eval_epoch(val_loader, model, output_ignore_value):
     batch_losses = []
     pred_val_arr, true_val_arr = [], []
     for input_seqs, output_vals in t_iter:
+        torch.cuda.empty_cache()
         true_val_arr.append(output_vals)
 
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
@@ -190,19 +240,36 @@ def eval_epoch(val_loader, model, output_ignore_value):
 
         # Make channels come first in input
         input_seqs = torch.transpose(input_seqs, 1, 2)
-        
-        probs = model(input_seqs)
-        pred_val_arr.append(probs.to("cpu"))
+        if att_prior_loss_weight > 0:
+            torch.set_grad_enabled(True)  # We actually do need grad here
+            input_seqs.requires_grad = True  # Set gradient required
 
-        loss = model.loss(output_vals, probs, output_ignore_value)
-        loss_value = loss.item()
+        probs = model(input_seqs)
+        pred_val_arr.append(probs.detach().to("cpu").numpy())
         
+        if att_prior_loss_weight > 0:
+            probs.backward(
+                util.place_tensor(torch.ones(probs.size())),
+                retain_graph=True
+            )
+            input_grads = input_seqs.grad.view(
+                probs.size() + input_seqs.size()[1:]
+            ).transpose(2, 3)
+            input_seqs.requires_grad = False  # Reset gradient required
+            model.zero_grad()  # Clear gradients
+            torch.set_grad_enabled(False)  # Don't need grad to compute loss
+        else:
+            input_grads = None
+
+        loss = model_loss(model, output_vals, probs, input_grads)
+        loss_value = loss.item()
+
         batch_losses.append(loss_value)
         t_iter.set_description(
             "\tValidation loss: %6.10f" % loss_value
         )
 
-    pred_vals = torch.cat(pred_val_arr).numpy()
+    pred_vals = np.concatenate(pred_val_arr)
     true_vals = np.concatenate(true_val_arr)
 
     return np.mean(batch_losses), pred_vals, true_vals
@@ -211,7 +278,7 @@ def eval_epoch(val_loader, model, output_ignore_value):
 def train(
     train_loader, val_loader, num_epochs, learning_rate, early_stopping,
     early_stop_hist_len, early_stop_min_delta, train_seed, val_neg_downsample,
-    output_ignore_value, _run
+    _run
 ):
     """
     Trains the network for the given training and validation data.
@@ -262,7 +329,7 @@ def train(
 
         # Compute evaluation metrics and log them
         metrics = performance.compute_evaluation_metrics(
-            true_vals, pred_vals, val_neg_downsample, output_ignore_value
+            true_vals, pred_vals, val_neg_downsample
         )
         performance.log_evaluation_metrics(metrics, logger, _run)
 
@@ -304,4 +371,6 @@ def run_training(train_bed_path, val_bed_path):
 def main():
     train_bedfile = "/users/amtseng/tfmodisco/data/processed/DREAM/tests/SPI1_test_2000.tsv.gz"
     val_bedfile = train_bedfile
+    train_bedfile = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/labels/SPI1.train.labels.tsv.gz"
+    val_bedfile = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/heldout_chr/training_celltypes/labels/SPI1.train.labels.tsv.gz"
     run_training(train_bedfile, val_bedfile)

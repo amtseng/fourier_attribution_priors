@@ -11,24 +11,24 @@ hyperparam_ex = sacred.Experiment("hyperparam", ingredients=[
 ])
 
 def uniformly_sample_dist(start, end, log_scale=False, log_base=10):
-	"""
-	Returns a single number uniformly sampled between `start` and `end`. If
-	`log_scale` is True, the number between `start` and `end` represent
-	exponents (base `log_base`).
-	"""
-	if start > end:
-		start, end = end, start
-	sample = np.random.uniform(start, end)
-	if log_scale:
-		return log_base ** sample
-	return sample
+    """
+    Returns a single number uniformly sampled between `start` and `end`. If
+    `log_scale` is True, the number between `start` and `end` represent
+    exponents (base `log_base`).
+    """
+    if start > end:
+            start, end = end, start
+    sample = np.random.uniform(start, end)
+    if log_scale:
+            return log_base ** sample
+    return sample
 
 
 def uniformly_sample_list(vals):
-	"""
-	Returns a single value uniformly sampled from the list `vals`.
-	"""
-	return random.choice(vals)
+    """
+    Returns a single value uniformly sampled from the list `vals`.
+    """
+    return random.choice(vals)
 
 
 def deep_update(parent, update):
@@ -77,6 +77,8 @@ def main(train_file, val_file, num_runs, config_path):
         hparams = {
             "fc_drop_rate": uniformly_sample_dist(-1, -3, log_scale=True),
             "learning_rate": uniformly_sample_dist(-1, -6, log_scale=True),
+            "att_prior_loss_weight": uniformly_sample_dist(-1, 2, log_scale=True),
+            "att_prior_pos_weight": uniformly_sample_dist(-2, 2, log_scale=True),
             "dataset": {
                 "batch_size": uniformly_sample_list([32, 64, 128, 256])
             }
@@ -105,6 +107,6 @@ def main(train_file, val_file, num_runs, config_path):
             sample_hyperparams(), config, train_file, val_file
         )
     
-	
+        
 if __name__ == "__main__":
-	main()	 
+        main()   
