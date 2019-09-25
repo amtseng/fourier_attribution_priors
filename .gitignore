@@ -106,5 +106,6 @@ venv.bak/
 # Vim
 *.swp
 
-models/
-data/
+/models/
+/data/*
+!/data/README.md
