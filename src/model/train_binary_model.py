@@ -210,7 +210,7 @@ def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
             "\tTraining loss: %6.10f" % loss_value
         )
 
-    return np.mean(batch_losses)
+    return np.nanmean(batch_losses)
 
 
 @train_ex.capture
@@ -272,7 +272,7 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
     pred_vals = np.concatenate(pred_val_arr)
     true_vals = np.concatenate(true_val_arr)
 
-    return np.mean(batch_losses), pred_vals, true_vals
+    return np.nanmean(batch_losses), pred_vals, true_vals
 
 @train_ex.capture
 def train(

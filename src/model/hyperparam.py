@@ -77,7 +77,7 @@ def main(train_file, val_file, num_runs, config_path):
         hparams = {
             "fc_drop_rate": uniformly_sample_dist(-1, -3, log_scale=True),
             "learning_rate": uniformly_sample_dist(-1, -6, log_scale=True),
-            "att_prior_loss_weight": uniformly_sample_dist(-1, 2, log_scale=True),
+            "att_prior_loss_weight": uniformly_sample_dist(-1, 1, log_scale=True),
             "att_prior_pos_weight": uniformly_sample_dist(-2, 2, log_scale=True),
             "dataset": {
                 "batch_size": uniformly_sample_list([32, 64, 128, 256])
