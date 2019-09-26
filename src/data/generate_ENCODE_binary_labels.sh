@@ -43,8 +43,8 @@ genomewide_labels --task_list $taskfile \
 				  --chrom_sizes /users/amtseng/genomes/hg38.canon.chrom.sizes \
 				  --bin_stride 50 \
 				  --bin_size 200 \
-				  --left_flank 0 \
-				  --right_flank 0 \
+				  --left_flank 400 \
+				  --right_flank 400 \
 				  --chrom_threads 10 \
 				  --task_threads 4 \
 				  --allow_ambiguous \
