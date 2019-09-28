@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: job-template
+spec:
+  template:
+    metadata:
+      name: job-template
+    spec:
+      containers:
+      - name: att-priors
+        image: kundajelab/att-priors:latest
+        args: ["bash", "/amtseng_ceph/run_script.sh", "TEST", "/amtseng_ceph/data/test_train.bed.gz", "/amtseng_ceph/data/test_holdout.bed.gz", "/amtseng_ceph/data/test_config.json"]
+        resources:
+          requests:
+            cpu: "20"
+            memory: 32Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: "30"
+            memory: 64Gi
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - mountPath: /amtseng_ceph
+          name: amtseng-ceph
+      restartPolicy: Never
+      volumes:
+        - name: amtseng-ceph
+          flexVolume:
+            driver: ceph.rook.io/rook
+            fsType: ceph
+            options:
+              clusterNamespace: rook
+              fsname: nautilusfs
+              path: /amtseng
+              mountUser: amtseng
+              mountSecret: ceph-fs-secret
+  backoffLimit: 3
