@@ -1,4 +1,5 @@
-## `raw/`: links to `/mnt/lab_data2/amtseng/att_priors/data/raw/`
+### `raw/`
+Links to `/mnt/lab_data2/amtseng/att_priors/data/raw/`
 - `DREAM/`
 	- This contains the directly dowloaded ChIP-seq runs for selected transcription factors from the ENCODE-DREAM challenge
 	- `DREAM_data_to_use.tsv` contains the files that are downloaded from the repository, and the original paths of each file from Synapse
@@ -31,7 +32,8 @@
 		- Command: `cat augmented_withlinecounts_metadata_optimalandrelaxedpeaks_encodeprocessed.tsv | awk -F "\t" '$10 ~ /^(CEBPB|E2F6|GABPA|JUND|REST|SPI1|TEAD4|target_label)$/' > ENCODE_data_to_use.tsv`
 	- Downloads are done by `download_ENCODE_data.py`
 
-## `processed/`: links to `/mnt/lab_data2/amtseng/att_priors/data/processed/`
+### `processed/`
+Links to `/mnt/lab_data2/amtseng/att_priors/data/processed/`
 - Raw data that has been processed to its final form to be used for training
 - `DREAM/`
 	- `labels/`
