@@ -53,6 +53,9 @@ def config(dataset):
     # Number of outputs to predict
     num_outputs = 1
 
+    # Whether to average the positive and negative correctness losses
+    avg_class_loss = True
+
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
     att_prior_loss_weight = 1.0
 
@@ -130,7 +133,7 @@ def create_model(
 
 @train_ex.capture
 def model_loss(
-    model, true_vals, probs, input_grads, att_prior_loss_weight,
+    model, true_vals, probs, input_grads, avg_class_loss, att_prior_loss_weight,
     att_prior_pos_limit, att_prior_pos_weight
 ):
     """
@@ -140,14 +143,13 @@ def model_loss(
         `true_seqs`: a B x C tensor, where B is the batch size and C is the
             number of output tasks, containing the true binary values
         `probs`: a B x C tensor containing the predicted probabilities
-        
         `input_grads`: a B x C x L x D tensor, where B is the batch size, C is
             the number of output tasks, L is the length of the input, and D is
             the dimensionality of each input base; this needs to be the
             gradients of the input with respect to each output task
     Returns a scalar Tensor containing the loss for the given batch.
     """
-    pred_loss = model.prediction_loss(true_vals, probs)
+    pred_loss = model.prediction_loss(true_vals, probs, avg_class_loss)
    
     if not att_prior_loss_weight:
         return pred_loss

@@ -163,25 +163,44 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         return probs
 
 
-    def prediction_loss(self, true_vals, probs):
+    def prediction_loss(self, true_vals, probs, average_classes=False):
         """
         Computes the binary cross-entropy loss.
         Arguments:
             `true_seqs`: a B x C tensor, where B is the batch size and C is the
                 number of output tasks, containing the true binary values
             `probs`: a B x C tensor containing the predicted probabilities
+            `average_classes`: if True, compute the loss separately for the
+                positives and the negatives, and return their average; this
+                weights the losses between imbalanced classes more evenly
         Returns a tensor scalar that is the loss for the batch.
         """
         assert true_vals.size() == probs.size()
         true_vals_flat = torch.flatten(true_vals)
         probs_flat = torch.flatten(probs)
 
-        # Ignore anything that's not 0 or 1
-        mask = (true_vals_flat == 0) | (true_vals_flat == 1)
-        true_vals_flat = true_vals_flat[mask]
-        probs_flat = probs_flat[mask]
+        if average_classes:
+            pos_mask = true_vals_flat == 1
+            neg_mask = true_vals_flat == 0
 
-        return self.bce_loss(probs_flat, true_vals_flat)
+            pos_true, pos_probs = true_vals_flat[pos_mask], probs_flat[pos_mask]
+            neg_true, neg_probs = true_vals_flat[neg_mask], probs_flat[neg_mask]
+
+            if not pos_true.nelement():
+                return self.bce_loss(neg_probs, neg_true)
+            elif not neg_true.nelement():
+                return self.bce_loss(pos_probs, pos_true)
+            else:
+                pos_loss = self.bce_loss(pos_probs, pos_true)
+                neg_loss = self.bce_loss(neg_probs, neg_true)
+                return (pos_loss + neg_loss) / 2
+        else:
+            # Ignore anything that's not 0 or 1
+            mask = (true_vals_flat == 0) | (true_vals_flat == 1)
+            true_vals_flat = true_vals_flat[mask]
+            probs_flat = probs_flat[mask]
+
+            return self.bce_loss(probs_flat, true_vals_flat)
 
 
     def att_prior_loss(self, true_vals, input_grads, pos_limit, pos_weight):
