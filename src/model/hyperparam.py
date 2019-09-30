@@ -7,9 +7,7 @@ import sacred
 import torch
 import json
 
-hyperparam_ex = sacred.Experiment("hyperparam", ingredients=[
-    train.train_ex
-])
+hyperparam_ex = sacred.Experiment("hyperparam")
 
 def uniformly_sample_dist(start, end, log_scale=False, log_base=10):
     """
@@ -48,11 +46,16 @@ def deep_update(parent, update):
 
 
 @hyperparam_ex.capture
-def launch_training(hparams, config, train_file, val_file):
-    deep_update(hparams, config)
+def launch_training(hparams, base_config, train_file, val_file):
+    deep_update(hparams, base_config)
     config_updates = hparams
-    config_updates["train_bed_path"] = train_file
-    config_updates["val_bed_path"] = val_file
+
+    # Hoist up the train subdictionary to the root, since that's the command
+    # that's being run
+    train_dict = config_updates["train"]
+    del config_updates["train"]
+    deep_update(config_updates, train_dict)
+
     train.train_ex.run("run_training", config_updates=config_updates)
 
 
@@ -69,17 +72,22 @@ def launch_training(hparams, config, train_file, val_file):
     "--num-runs", "-n", nargs=1, default=50, help="Number of runs for tuning"
 )
 @click.option(
-    "--config-path", "-c", nargs=1, default=None,
+    "--config-json-path", "-c", nargs=1, default=None,
     help="Path to a config JSON file for Sacred, may override hyperparameters"
 )
-def main(train_file, val_file, num_runs, config_path):
+@click.argument(
+    "config_cli_tokens", nargs=-1
+)
+def main(train_file, val_file, num_runs, config_json_path, config_cli_tokens):
     def sample_hyperparams():
         np.random.seed()  # Re-seed to random number
         hparams = {
-            "fc_drop_rate": uniformly_sample_dist(-1, -3, log_scale=True),
-            "learning_rate": uniformly_sample_dist(-1, -6, log_scale=True),
-            "att_prior_loss_weight": uniformly_sample_dist(-1, 1, log_scale=True),
-            "att_prior_pos_weight": uniformly_sample_dist(-2, 2, log_scale=True),
+            "train": {
+                "fc_drop_rate": uniformly_sample_dist(-1, -3, log_scale=True),
+                "learning_rate": uniformly_sample_dist(-1, -6, log_scale=True),
+                "att_prior_loss_weight": uniformly_sample_dist(-1, 1, log_scale=True),
+                "att_prior_pos_weight": uniformly_sample_dist(-2, 2, log_scale=True)
+            },
             "dataset": {
                 "batch_size": uniformly_sample_list([32, 64, 128, 256])
             }
@@ -97,17 +105,37 @@ def main(train_file, val_file, num_runs, config_path):
         model_dir = os.environ["MODEL_DIR"]
         print("Using %s as directory to store model outputs" % model_dir)
 
-    if config_path:
-        with open(config_path, "r") as f:
-            config = json.load(f)
+    if config_json_path:
+        with open(config_json_path, "r") as f:
+            config_json = json.load(f)
     else:
-        config = {}
+        config_json = {}
+
+    # Add in the configuration options supplied to commandline
+    base_config = config_json
+    for token in config_cli_tokens:
+        key, val = token.split("=", 1)
+        try:
+            val = eval(val)
+        except (NameError, SyntaxError):
+            pass  # Keep as string
+        d = base_config
+        key_pieces = key.split(".")
+        for key_piece in key_pieces[:-1]:
+            if key_piece not in d:
+                d[key_piece] = {}
+            d = d[key_piece]
+        d[key_pieces[-1]] = val
+
+    # Add in these arguments for the run_training command in train
+    base_config["train"]["train_bed_path"] = train_file
+    base_config["train"]["val_bed_path"] = val_file
 
     for i in range(num_runs):
         launch_training(
-            sample_hyperparams(), config, train_file, val_file
+            sample_hyperparams(), base_config, train_file, val_file
         )
     
         
 if __name__ == "__main__":
-        main()   
+    main()   

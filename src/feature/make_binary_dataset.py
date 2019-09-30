@@ -438,21 +438,26 @@ def main():
     import os
     import tqdm
 
+    tfname = "CEBPB"
+
+    base_path = "/users/amtseng/att_priors/data/"
+
     # ENCODE:
-    # basepath = "/users/amtseng/tfmodisco/data/processed/ENCODE/labels/"
-    # bedfile = os.path.join(basepath, tfname, "200bp_labels", "%s_train_labels_200bp.bed.gz" % tfname)
-
-    # DREAM:
-    basepath = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/labels/"
-    bedfile = os.path.join(basepath, "%s.train.labels.tsv.gz" % "SPI1")
-
-    bedfile = "/users/amtseng/tfmodisco/data/processed/DREAM/tests/SPI1_test_2000.tsv.gz"
-    
-    loader = data_loader_from_bedfile(
-        bedfile
+    bedfile = os.path.join(
+        base_path,
+        "processed/ENCODE/labels/{0}/{0}_all_labels.bed.gz".format(tfname)
     )
+
+    print(tfname)
+
+    loader = data_loader_from_bedfile(
+        bedfile, convert_states=False,
+        reference_fasta = "/users/amtseng/genomes/hg38.fasta"
+    )
+    loader.on_epoch_start()
     start_time = datetime.now()
     for batch in tqdm.tqdm(loader, total=len(loader.dataset)):
         data = batch
+        break  # Just one batch to test
     end_time = datetime.now()
     print("Time: %ds" % (end_time - start_time).seconds)
