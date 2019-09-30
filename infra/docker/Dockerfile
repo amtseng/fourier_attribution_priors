@@ -9,4 +9,5 @@ COPY train_requirements.txt /att_priors
 
 # Install any needed packages specified in requirements.txt, and others
 RUN pip install -r train_requirements.txt
-# RUN apt install -y vim-tiny less
+RUN git clone https://github.com/atseng95/sacred.git
+RUN cd sacred && python setup.py install
