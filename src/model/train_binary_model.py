@@ -134,7 +134,7 @@ def create_model(
 @train_ex.capture
 def model_loss(
     model, true_vals, probs, input_grads, avg_class_loss, att_prior_loss_weight,
-    att_prior_pos_limit, att_prior_pos_weight
+    att_prior_pos_limit, att_prior_pos_weight, return_loss_parts=False
 ):
     """
     Computes the loss for the model.
@@ -147,24 +147,31 @@ def model_loss(
             the number of output tasks, L is the length of the input, and D is
             the dimensionality of each input base; this needs to be the
             gradients of the input with respect to each output task
-    Returns a scalar Tensor containing the loss for the given batch.
+    Returns a scalar Tensor containing the loss for the given batch, as well as
+    a pair consisting of the correctness loss and the attribution prior loss.
+    If the attribution prior loss is not computed at all, then 0 will be in its
+    place, instead.
     """
     pred_loss = model.prediction_loss(true_vals, probs, avg_class_loss)
    
     if not att_prior_loss_weight:
-        return pred_loss
+        return pred_loss, (pred_loss, torch.zeros(1))
     
     att_prior_loss = model.att_prior_loss(
         true_vals, input_grads, att_prior_pos_limit, att_prior_pos_weight
     )
-    return pred_loss + (att_prior_loss_weight * att_prior_loss)
+    final_loss = pred_loss + (att_prior_loss_weight * att_prior_loss)
+    return final_loss, (pred_loss, att_prior_loss)
 
 
 @train_ex.capture
 def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
     """
     Runs the data from the training loader once through the model, and performs
-    backpropagation. Returns the loss for the epoch.
+    backpropagation. Returns a list of losses for the batches, a list of
+    correction losses specifically for the batches, and a list of attribution
+    prior losses specifically for the batches. If the attribution prior loss is
+    not computed, then the list will have all 0s.
     """
     train_loader.dataset.on_epoch_start()  # Set-up the epoch
     num_batches = len(train_loader.dataset)
@@ -175,7 +182,7 @@ def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
     model.train()  # Switch to training mode
     torch.set_grad_enabled(True)
 
-    batch_losses = []
+    batch_losses, pred_losses, att_losses = [], [], []
     for input_seqs, output_vals in t_iter:
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
         output_vals = util.place_tensor(torch.tensor(output_vals)).float()
@@ -205,25 +212,31 @@ def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
             input_grads = None
 
         optimizer.zero_grad()  # Clear gradients from last batch
-        loss = model_loss(model, output_vals, probs, input_grads)
-        loss_value = loss.item()
+        loss, (pred_loss, att_loss) = model_loss(
+            model, output_vals, probs, input_grads
+        )
         loss.backward()  # Compute gradient
         optimizer.step()  # Update weights through backprop
         
-        batch_losses.append(loss_value)
+        batch_losses.append(loss.item())
+        pred_losses.append(pred_loss.item())
+        att_losses.append(att_loss.item())
         t_iter.set_description(
-            "\tTraining loss: %6.10f" % loss_value
+            "\tTraining loss: %6.10f" % loss.item()
         )
 
-    return np.nanmean(batch_losses)
+    return batch_losses, pred_losses, att_losses
 
 
 @train_ex.capture
 def eval_epoch(val_loader, model, att_prior_loss_weight):
     """
     Runs the data from the validation loader once through the model, and
-    saves the output results. Returns the loss for the epoch, a NumPy array of
-    predicted probabilities, and a NumPy array of true values.
+    saves the output results. Returns a list of losses for the batches, a list
+    of correction losses specifically for the batches, a list of attribution
+    prior losses specifically for the batches, a NumPy array of predicted
+    probabilities, and a NumPy array of true values. If the attribution prior
+    loss is not computed, then the list will have all 0s.
     """ 
     val_loader.dataset.on_epoch_start()  # Set-up the epoch
     num_batches = len(val_loader.dataset)
@@ -233,7 +246,7 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
 
     model.eval()  # Switch to evaluation mode
 
-    batch_losses = []
+    batch_losses, pred_losses, att_losses = [], [], []
     pred_val_arr, true_val_arr = [], []
     for input_seqs, output_vals in t_iter:
         true_val_arr.append(output_vals)
@@ -271,18 +284,23 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
             pred_val_arr.append(probs.detach().to("cpu").numpy())
             input_grads = None
 
-        loss = model_loss(model, output_vals, probs, input_grads)
-        loss_value = loss.item()
+        loss, (pred_loss, att_loss) = model_loss(
+            model, output_vals, probs, input_grads
+        )
 
-        batch_losses.append(loss_value)
+        batch_losses.append(loss.item())
+        pred_losses.append(pred_loss.item())
+        att_losses.append(att_loss.item())
+
         t_iter.set_description(
-            "\tValidation loss: %6.10f" % loss_value
+            "\tValidation loss: %6.10f" % loss.item()
         )
 
     pred_vals = np.concatenate(pred_val_arr)
     true_vals = np.concatenate(true_val_arr)
 
-    return np.nanmean(batch_losses), pred_vals, true_vals
+    return batch_losses, pred_losses, att_losses, pred_vals, true_vals
+
 
 @train_ex.capture
 def train(
@@ -319,23 +337,34 @@ def train(
         if torch.cuda.is_available:
             torch.cuda.empty_cache()  # Clear GPU memory
 
-        train_epoch_loss = train_epoch(
+        t_batch_losses, t_pred_losses, t_att_losses = train_epoch(
             train_loader, model, optimizer
         )
+        train_epoch_loss = np.nanmean(t_batch_losses)
         print(
             "Train epoch %d: average loss = %6.10f" % (
                 epoch + 1, train_epoch_loss
             )
         )
+        _run.log_scalar("train_epoch_loss", train_epoch_loss)
+        _run.log_scalar("train_batch_losses", t_batch_losses)
+        _run.log_scalar("train_pred_losses", t_pred_losses)
+        _run.log_scalar("train_att_losses", t_att_losses)
 
-        val_epoch_loss, pred_vals, true_vals = eval_epoch(
+        v_batch_losses, v_pred_losses, v_att_losses, pred_vals, true_vals = \
+        eval_epoch(
             val_loader, model
         )
+        val_epoch_loss = np.nanmean(v_batch_losses)
         print(
             "Valid epoch %d: average loss = %6.10f" % (
                 epoch + 1, val_epoch_loss
             )
         )
+        _run.log_scalar("val_epoch_loss", val_epoch_loss)
+        _run.log_scalar("val_batch_losses", v_batch_losses)
+        _run.log_scalar("val_pred_losses", v_pred_losses)
+        _run.log_scalar("val_att_losses", v_att_losses)
 
         # Compute evaluation metrics and log them
         metrics = performance.compute_evaluation_metrics(
