@@ -182,26 +182,29 @@ def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
         
         # Make channels come first in input
         input_seqs = torch.transpose(input_seqs, 1, 2)
+
         if att_prior_loss_weight > 0:
             input_seqs.requires_grad = True  # Set gradient required
-
-        optimizer.zero_grad() # Clear gradients from previous batch
-
-        probs = model(input_seqs)
-
-        if att_prior_loss_weight > 0:
-            probs.backward(
-                util.place_tensor(torch.ones(probs.size())),
-                retain_graph=True
-            )
-            input_grads = input_seqs.grad.view(
-                probs.size() + input_seqs.size()[1:]
-            ).transpose(2, 3)
+            probs = model(input_seqs)
+            input_grads = []
+            for i in range(probs.size(1)):
+                model.zero_grad()  # Clear gradients
+                mask = torch.zeros(probs.size())
+                mask[:, i] = 1  # Only consider gradients for one task
+                probs.backward(
+                    util.place_tensor(mask),
+                    retain_graph=True
+                )
+                grad = torch.unsqueeze(input_seqs.grad, dim=1)  # B x 1 x D x L
+                input_grads.append(grad)
+            input_grads = torch.cat(input_grads, dim=1)  # B x C x D x L
+            input_grads = input_grads.transpose(2, 3)  # B x C x L x D
             input_seqs.requires_grad = False  # Reset gradient required
-            optimizer.zero_grad()  # Clear gradients
         else:
+            probs = model(input_seqs)
             input_grads = None
 
+        optimizer.zero_grad()  # Clear gradients from last batch
         loss = model_loss(model, output_vals, probs, input_grads)
         loss_value = loss.item()
         loss.backward()  # Compute gradient
@@ -229,12 +232,10 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
     )
 
     model.eval()  # Switch to evaluation mode
-    torch.set_grad_enabled(False)
 
     batch_losses = []
     pred_val_arr, true_val_arr = [], []
     for input_seqs, output_vals in t_iter:
-        torch.cuda.empty_cache()
         true_val_arr.append(output_vals)
 
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
@@ -242,25 +243,32 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
 
         # Make channels come first in input
         input_seqs = torch.transpose(input_seqs, 1, 2)
+
         if att_prior_loss_weight > 0:
             torch.set_grad_enabled(True)  # We actually do need grad here
             input_seqs.requires_grad = True  # Set gradient required
-
-        probs = model(input_seqs)
-        pred_val_arr.append(probs.detach().to("cpu").numpy())
-        
-        if att_prior_loss_weight > 0:
-            probs.backward(
-                util.place_tensor(torch.ones(probs.size())),
-                retain_graph=True
-            )
-            input_grads = input_seqs.grad.view(
-                probs.size() + input_seqs.size()[1:]
-            ).transpose(2, 3)
+            probs = model(input_seqs)
+            pred_val_arr.append(probs.detach().to("cpu").numpy())
+            input_grads = []
+            for i in range(probs.size(1)):
+                model.zero_grad()  # Clear gradients
+                mask = torch.zeros(probs.size())
+                mask[:, i] = 1  # Only consider gradients for one task
+                probs.backward(
+                    util.place_tensor(mask),
+                    retain_graph=True
+                )
+                grad = torch.unsqueeze(input_seqs.grad, dim=1)  # B x 1 x D x L
+                input_grads.append(grad)
+            input_grads = torch.cat(input_grads, dim=1)  # B x C x D x L
+            input_grads = input_grads.transpose(2, 3)  # B x C x L x D
             input_seqs.requires_grad = False  # Reset gradient required
-            model.zero_grad()  # Clear gradients
             torch.set_grad_enabled(False)  # Don't need grad to compute loss
         else:
+            torch.set_grad_enabled(False)
+            model.zero_grad()  # Clear gradients from last batch
+            probs = model(input_seqs)
+            pred_val_arr.append(probs.detach().to("cpu").numpy())
             input_grads = None
 
         loss = model_loss(model, output_vals, probs, input_grads)
