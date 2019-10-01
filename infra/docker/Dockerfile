@@ -11,3 +11,7 @@ COPY train_requirements.txt /att_priors
 RUN pip install -r train_requirements.txt
 RUN git clone https://github.com/atseng95/sacred.git
 RUN cd sacred && python setup.py install
+
+# Set environment variables for Python
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8

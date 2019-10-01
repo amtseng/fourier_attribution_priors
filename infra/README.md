@@ -32,6 +32,9 @@
 `job_template.yaml`
 - An example template of what a job configuration file should look like
 
+`jobs/`
+- Filled-in jobs for running
+
 ### Information about the Nautilus system and `infra`
 - Ceph allows the same volume to be mounted across many pods at once
 	- It was setup with a given username (`amtseng`) and password, provided to `kubectl create secret generic ceph-fs-secret`

@@ -104,4 +104,6 @@ cp -r /amtseng_ceph/att_priors/src /att_priors
 echo "Beginning hyperparameter tuning..."
 cd /att_priors/src
 echo $modeldir
+export LC_ALL=C.UTF-8  # Needed for Python in the Docker container
+export LANG=C.UTF-8
 MODEL_DIR=$modeldir python -m model.hyperparam -t $trainbed -v $valbed $configopt $@

@@ -1,16 +1,26 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: job-template
+  name: test
 spec:
   template:
     metadata:
-      name: job-template
+      name: test
     spec:
       containers:
       - name: att-priors
         image: kundajelab/att-priors:latest
-        args: ["bash", "/amtseng_ceph/run_script.sh", "TEST", "/amtseng_ceph/data/test_train.bed.gz", "/amtseng_ceph/data/test_holdout.bed.gz", "/amtseng_ceph/data/test_config.json"]
+        args: ["bash", "/amtseng_ceph/att_priors/run_script.sh",
+		      "-t", "/att_priors/TEAD4_test_2000.bed.gz",
+              "-v", "/att_priors/TEAD4_test_2000.bed.gz",
+              "-c", "/amtseng_ceph/att_priors/data/processed/ENCODE/config/TEAD4_config.json",
+		      "-m", "/amtseng_ceph/att_priors/trained_models/TEST/",
+		      "-p", "/amtseng_ceph/genomes/hg38.fasta", "/att_priors/",
+		      "-p", "/amtseng_ceph/genomes/hg38.fasta.fai", "/att_priors/",
+		      "-p", "/amtseng_ceph/att_priors/data/processed/ENCODE/tests/TEAD4_test_2000.bed.gz", "/att_priors/",
+		      "dataset.reference_fasta=/att_priors/hg38.fasta",
+		      "train.avg_class_loss=True",
+		      "train.att_prior_loss_weight=1"]
         resources:
           requests:
             cpu: "20"
