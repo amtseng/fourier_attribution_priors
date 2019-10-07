@@ -1,9 +1,10 @@
 tfname=$1
-
-indir=/users/amtseng/att_priors/data/raw/ENCODE/$tfname
+indir=/users/amtseng/att_priors/data/raw/ENCODE/$tfname/tf_chipseq
 outdir=/users/amtseng/att_priors/data/processed/ENCODE/labels/$tfname
 
 bglimit=150000
+
+scriptdir=$(dirname $0)
 
 mkdir -p $outdir/peaks
 taskfile=$outdir/labelgen_tasks.tsv
@@ -11,17 +12,17 @@ taskfile=$outdir/labelgen_tasks.tsv
 printf "Preparing the task list\n"
 printf "" > $taskfile
 
-for expid in `ls $indir | awk -F "_" '{print $1}' | sort -u`
+for expid in `find $indir -name *peaks*.bed.gz -exec basename {} \; | awk -F "_" '{print $1}' | sort -u`
 do
-	cline=$(ls $indir/$expid\_* | xargs basename | cut -d "_" -f 2 | uniq)
+	cline=$(find $indir -name $expid\_* -exec basename {} \; | cut -d "_" -f 2 | uniq)
 
-	bgacc=$(ls $indir/$expid\_$cline\_peaks-bg* | xargs basename | cut -d "." -f 1 | cut -d "_" -f 4 | uniq)
-	optacc=$(ls $indir/$expid\_$cline\_optimal* | xargs basename | cut -d "." -f 1 | cut -d "_" -f 4 | uniq)
+	bgacc=$(ls $indir/$expid\_$cline\_peaks-all* | xargs basename | cut -d "." -f 1 | cut -d "_" -f 4 | uniq)
+	optacc=$(ls $indir/$expid\_$cline\_peaks-optimal* | xargs basename | cut -d "." -f 1 | cut -d "_" -f 4 | uniq)
 
-	bgbed=${indir}/${expid}_${cline}_peaks-bg_${bgacc}.bed.gz
-	bgcanbed=${outdir}/peaks/${expid}_${cline}_peaks-bg_${bgacc}.canon.bed.gz
-	optbed=${indir}/${expid}_${cline}_optimal_${optacc}.bed.gz
-	optcanbed=${outdir}/peaks/${expid}_${cline}_optimal_${optacc}.canon.bed.gz
+	bgbed=${indir}/${expid}_${cline}_peaks-all_${bgacc}.bed.gz
+	bgcanbed=${outdir}/peaks/${expid}_${cline}_peaks-all_${bgacc}.canon.bed.gz
+	optbed=${indir}/${expid}_${cline}_peaks-optimal_${optacc}.bed.gz
+	optcanbed=${outdir}/peaks/${expid}_${cline}_peaks-optimal_${optacc}.canon.bed.gz
 	ambibed=${outdir}/peaks/${expid}_${cline}_ambig.bed
 
 	printf "\tLimiting background set to top $bglimit peaks, and keeping only canonical contigs\n"
@@ -53,3 +54,12 @@ genomewide_labels --task_list $taskfile \
 # Cleanup
 rm -rf $outdir/peaks
 rm $taskfile
+
+echo "Converting HDF5 to gzipped BED files..."
+python $scriptdir/hd5f_to_bed.py -i $outdir/labels.hdf5 -o $outdir/$tfname\_all_labels.bed.gz -z
+
+echo "Splitting into training and validation..."
+bash $scriptdir/split_bed_train_val.sh $tfname $outdir/$tfname\_all_labels.bed.gz
+
+# Cleanup
+rm $outdir/labels.hdf5
