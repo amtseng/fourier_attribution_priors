@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import sacred
 from datetime import datetime
-from pyfaidx import Fasta
+import util
 
 dataset_ex = sacred.Experiment("dataset")
 
@@ -27,7 +27,10 @@ def config():
     # One-hot encoding has this depth
     input_depth = 4
 
-    # Batch size; will be multiplied by two if augmentation is done
+    # Whether or not to perform reverse complement augmentation
+    revcomp = True
+
+    # Batch size; will be multiplied by two if reverse complementation is done
     batch_size = 128
 
     # Sample every X positives
@@ -57,7 +60,7 @@ class CoordsToVals():
     """
     From a single gzipped BED file containing genomic coordinates and more
     columns of values for each coordinate, this creates an object that maps a
-    list of Coordinate objects to a NumPy array of values at those coordinates.
+    list of coordinates (tuples) to a NumPy array of values at those coordinates.
     Arguments:
         `gzipped_bed_file`: Path to gzipped BED file containing a set of
             coordinates, with the extra columns being output values; coordinates
@@ -103,86 +106,6 @@ class CoordsToVals():
 
     def __call__(self, coords):
         return self._get_ndarray(coords)
-
-
-class CoordsToSeq():
-    """
-    Creates an object that converts genome Coordinates into a one-hot encoded
-    sequence.
-    This class is nearly identical to PyfaidxCoordsToVals, but it is thread-safe
-    because each thread running `_get_ndarray` will have its own memory-mapped
-    Fasta reader object.
-    Arguments:
-        `genome_fasta_path`: Path to the genome assembly FASTA
-        `center_size_to_use`: For each genomic Coordinate, center it and pad it
-            on both sides to this length to get the final sequence
-    """
-    def __init__(self, genome_fasta_path, center_size_to_use=None):
-        self.center_size_to_use = center_size_to_use
-        self.genome_fasta_path = genome_fasta_path
-        self.one_hot_base_dict = {
-            "A": np.array([1, 0, 0, 0], dtype=np.float64),
-            "C": np.array([0, 1, 0, 0], dtype=np.float64),
-            "G": np.array([0, 0, 1, 0], dtype=np.float64),
-            "T": np.array([0, 0, 0, 1], dtype=np.float64),
-            "a": np.array([1, 0, 0, 0], dtype=np.float64),
-            "c": np.array([0, 1, 0, 0], dtype=np.float64),
-            "g": np.array([0, 0, 1, 0], dtype=np.float64),
-            "t": np.array([0, 0, 0, 1], dtype=np.float64),
-        }
-        self.one_hot_base_map = lambda b: self.one_hot_base_dict.get(
-            b, np.array([0, 0, 0, 0])  # Default to all 0s if base not found
-        )
-
-    def _get_seq(self, chrom, start, end, gen_reader):
-        """
-        Fetches the FASTA sequence for the given coordinates, with an
-        instantiated genome reader. Returns the sequence string.
-        This function performs the necessary padding to map from a coordinate
-        to a full sequence to be featurized.
-        """
-        if self.center_size_to_use:
-            center = int(0.5 * (start + end))
-            pad = int(0.5 * self.center_size_to_use)
-            left = center - pad
-            right = center + self.center_size_to_use - pad
-            return gen_reader[chrom][left:right].seq
-        else:
-            return gen_reader[chrom][start:end].seq
-    
-    def _get_ndarray(self, coords, revcomp=False):
-        """
-        `coords` is an iterable of coordinate tuples (e.g. a list of tuples,
-        or a partial Pandas MultiIndex).
-        Returns a NumPy array of one-hot
-        encoded sequences. Note that if `center_size_to_use` is not specified,
-        then all Coordinates must be of the same length. If `revcomp` is True,
-        also include the reverse complement sequences (concatenated at the end).
-        """
-        # Create a new Fasta reader; this way, every thread that runs this
-        # function gets its own reader; otherwise, garbage is returned
-        gen_reader = Fasta(self.genome_fasta_path)
-
-        # Fetch all sequences
-        seqs = [self._get_seq(c[0], c[1], c[2], gen_reader) for c in coords]
-
-        # Lay all sequences end-to-end and convert to a 1-column Pandas Series
-        seqs_col = pd.Series(iter("".join(seqs)))
-        
-        # Convert each base in the Series to its one-hot encoding
-        encs_col = np.array(seqs_col.map(self.one_hot_base_map).values.tolist())
-
-        # Reshape the single column of one-hot encodings into separate sequences
-        onehot = encs_col.reshape([len(coords), self.center_size_to_use, 4])
-
-        if revcomp:
-            rc = onehot[:, ::-1, ::-1]
-            onehot = np.concatenate([onehot, rc])
-
-        return onehot
-
-    def __call__(self, coords, revcomp=False):
-        return self._get_ndarray(coords, revcomp)
 
 
 class CoordsDownsampler(torch.utils.data.sampler.Sampler):
@@ -354,14 +277,13 @@ class CoordDataset(torch.utils.data.IterableDataset):
 @dataset_ex.capture
 def data_loader_from_bedfile(
     bedfile_path, batch_size, reference_fasta, input_length,
-    positive_stride, negative_stride, num_workers, convert_states, dataset_seed,
-    hastitle=True, augment=True, shuffle=True, return_coords=False
+    positive_stride, negative_stride, num_workers, convert_states, revcomp,
+    dataset_seed, hastitle=True, shuffle=True, return_coords=False
 ):
     """
     From the path to a gzipped BED file containing coordinates and state labels,
-    returns a KerasBatchGenerator object. If `augment` is True, also augment
-    each batch with the reverse complement, thus doubling the true batch size.
-    If `shuffle` is True, shuffle the dataset before each epoch.
+    returns an IterableDataset object. If `shuffle` is True, shuffle the dataset
+    before each epoch.
     """
     # Maps set of coordinates to state values, imported from a BED file
     coords_to_vals = CoordsToVals(
@@ -411,13 +333,13 @@ def data_loader_from_bedfile(
     )
 
     # Maps set of coordinates to 1-hot encoding, padded
-    coords_to_seq = CoordsToSeq(
+    coords_to_seq = util.CoordsToSeq(
         reference_fasta, center_size_to_use=input_length
     )
 
     # Dataset
     dataset = CoordDataset(
-        coords_batcher, coords_to_seq, coords_to_vals, revcomp=augment,
+        coords_batcher, coords_to_seq, coords_to_vals, revcomp=revcomp,
         return_coords=return_coords
     )
 
@@ -445,7 +367,7 @@ def main():
     # ENCODE:
     bedfile = os.path.join(
         base_path,
-        "processed/ENCODE/labels/{0}/{0}_all_labels.bed.gz".format(tfname)
+        "processed/ENCODE/binary/labels/{0}/{0}_holdout_labels.bed.gz".format(tfname)
     )
 
     print(tfname)
@@ -454,7 +376,7 @@ def main():
         bedfile, convert_states=False,
         reference_fasta = "/users/amtseng/genomes/hg38.fasta"
     )
-    loader.on_epoch_start()
+    loader.dataset.on_epoch_start()
     start_time = datetime.now()
     for batch in tqdm.tqdm(loader, total=len(loader.dataset)):
         data = batch
