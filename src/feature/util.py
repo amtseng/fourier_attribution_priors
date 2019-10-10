@@ -99,3 +99,18 @@ class CoordsToSeq():
 
     def __call__(self, coords, revcomp=False):
         return self._get_ndarray(coords, revcomp)
+
+
+def one_hot_to_seq(one_hot):
+    """
+    Converts a one-hot encoded sequence into its original bases.
+    """
+    bases = "ACGT"
+    seq = ""
+    for arr in one_hot:
+        ind = np.where(arr)[0]
+        if ind.size:
+            seq += bases[ind[0]]
+        else:
+            seq += "N"
+    return seq

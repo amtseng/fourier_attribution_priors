@@ -115,10 +115,12 @@ class CoordsToVals:
 class CoordsBatcher(torch.utils.data.sampler.Sampler):
     """
     Creates a batch producer that batches positive coordinates and samples
-    negative coordinates.
+    negative coordinates. Each batch will have some positives and negatives
+    according to `neg_ratio`. When multiple sets of positive coordinates are
+    given, the coordinates are all pooled together and drawn from uniformly.
     Arguments:
-        `pos_coords_bed`: Path to gzipped BED file containing the set of
-            positive coordinates
+        `pos_coords_beds`: List of paths to gzipped BED files containing the
+            sets of positive coordinates for various tasks
         `batch_size`: Number of samples per batch
         `neg_ratio`: Number of negatives to select for each positive example
         `jitter`: Random amount to jitter each positive coordinate example by
@@ -128,7 +130,7 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
             each epoch
     """
     def __init__(
-        self, pos_coords_bed, batch_size, neg_ratio, jitter, genome_sampler,
+        self, pos_coords_beds, batch_size, neg_ratio, jitter, genome_sampler,
         shuffle_before_epoch=False, seed=None
     ):
         self.batch_size = batch_size
@@ -137,11 +139,19 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
         self.genome_sampler = genome_sampler
         self.shuffle_before_epoch = shuffle_before_epoch
 
-        # Read in the positive coordinates
-        pos_coords_table = pd.read_csv(
-            pos_coords_bed, sep="\t", header=None, compression="gzip"
-        )
-        self.pos_coords = pos_coords_table.values.astype(object)
+        # Read in the positive coordinates and make N x 4 array, where the
+        # 4th column is the identifier of the source BED
+        pos_coords = []
+        for i, pos_coords_bed in enumerate(pos_coords_beds):
+            pos_coords_table = pd.read_csv(
+                pos_coords_bed, sep="\t", header=None, compression="gzip"
+            )
+            coords = pos_coords_table.values.astype(object)
+            coords = np.concatenate(
+                [coords, np.tile(i + 1, (len(coords), 1))], axis=1
+            )
+            pos_coords.append(coords)
+        self.pos_coords = np.concatenate(pos_coords)
 
         # Number of positives and negatives per batch
         self.num_pos = len(self.pos_coords)
@@ -156,7 +166,10 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
         Fetches a full batch of positive and negative coordinates by filling the
         batch with some positive coordinates, and sampling randomly from the
         rest of the genome for the negatives. Returns a 2D NumPy array of
-        coordinates, along with a parallel NumPy array of binary status.
+        coordinates, along with a parallel NumPy array of status. Status is 0
+        for negatives, and [1, n] for positives, where the status is 1 plus the
+        index of the coordinate BED file it came from.
+        This method may also perform jittering for dataset augmentation.
         """
         pos_coords = self.pos_coords[
             index * self.pos_per_batch : (index + 1) * self.pos_per_batch
@@ -172,9 +185,9 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
 
         neg_coords = self.genome_sampler.sample_intervals(self.neg_per_batch)
         status = np.concatenate(
-            [np.ones(len(pos_coords)), np.zeros(len(neg_coords))]
+            [pos_coords[:,3], np.zeros(len(neg_coords), dtype=int)]
         )
-        return np.concatenate([pos_coords, neg_coords]), status
+        return np.concatenate([pos_coords[:,:3], neg_coords]), status
 
     def __len__(self):
         return int(np.ceil(self.num_pos / float(self.pos_per_batch)))
@@ -192,27 +205,33 @@ class CoordDataset(torch.utils.data.IterableDataset):
             coordinates (split into positive and negative binding)
         `coords_to_seq (CoordsToSeq)`: Maps coordinates to 1-hot encoded
             sequences
-        `coords_to_vals (CoordsToVals)`: Maps coordinates to profiles to predict
+        `coords_to_vals_list (list of CoordsToVals)`: List of instantiated
+            CoordsToVals objects, each of which maps coordinates to profiles
+            to predict
         `revcomp`: Whether or not to perform revcomp to the batch; this will
             double the batch size implicitly
         `return_coords`: If True, each batch returns the set of coordinates for
             that batch along with the 1-hot encoded sequences and values
     """
     def __init__(
-        self, coords_batcher, coords_to_seq, coords_to_vals, revcomp=False,
+        self, coords_batcher, coords_to_seq, coords_to_vals_list, revcomp=False,
         return_coords=False
     ):
         self.coords_batcher = coords_batcher
         self.coords_to_seq = coords_to_seq
-        self.coords_to_vals = coords_to_vals
+        self.coords_to_vals_list = coords_to_vals_list
         self.revcomp = revcomp
         self.return_coords = return_coords
 
     def get_batch(self, index):
         """
-        Returns a batch, which consists of a 2D NumPy array of 1-hot encoded
-        sequence, a 2D NumPy array of profiles, a 1D NumPy array of read counts,
-        and a 1D NumPy array of binding status (1 or 0).
+        Returns a batch, which consists of an N x L x 4 NumPy array of 1-hot
+        encoded sequence, an N x T x 2 x L NumPy array of profiles, an N x T x 2
+        NumPy array of read counts, and a 1D length N NumPy array of statuses.
+        For the profiles and counts, the profile for each of the T tasks in
+        `coords_to_vals_list` is returned, in the same order as in this list,
+        and each task contains 2 tracks, for the plus and minus strand,
+        respectively.
         """
         # Get batch of coordinates for this index
         coords, status = self.coords_batcher[index]
@@ -221,12 +240,20 @@ class CoordDataset(torch.utils.data.IterableDataset):
         seqs = self.coords_to_seq(coords, revcomp=self.revcomp)
 
         # Map this batch of coordinates to the associated profiles
-        profiles = self.coords_to_vals(coords)
-        counts = np.sum(profiles, axis=1)
+        profiles = np.stack([
+            np.stack([ctv_1(coords), ctv_2(coords)], axis=1) \
+            for ctv_1, ctv_2 in self.coords_to_vals_list
+        ], axis=1)
+        counts = np.sum(profiles, axis=3)
 
         # If reverse complementation was done, double sizes of everything else
         if self.revcomp:
-            profiles = np.concatenate([profiles, profiles])
+            profiles = np.concatenate(
+                # To reverse complement, we must swap the strands AND the
+                # directionality of each strand (i.e. we are assigning the other
+                # strand to be the plus strand, but still 5' to 3')
+                [profiles, np.flip(profiles, axis=(2, 3))]
+            )
             counts = np.concatenate([counts, counts])
             status = np.concatenate([status, status])
 
@@ -269,18 +296,23 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
 @dataset_ex.capture
 def data_loader_from_bedfile(
-    peaks_bed_path, profile_bigwig_path, batch_size, reference_fasta,
+    peaks_bed_paths, profile_bigwig_paths, batch_size, reference_fasta,
     chrom_sizes, input_length, negative_ratio, num_workers, revcomp,
     jitter_size, dataset_seed, shuffle=True, return_coords=False
 ):
     """
-    From the path to a gzipped BED file containing coordinates of positive
-    peaks and the path to a BigWig containing reads mapped to each location in
-    the gnome, returns an IterableDataset object. If `shuffle` is True, shuffle
-    the dataset before each epoch.
+    From a list of paths to gzipped BED files containing coordinates of positive
+    peaks, and a list of paired paths to BigWigs containing reads mapped to each
+    location in the genome, returns an IterableDataset object. Each entry in
+    `profile_bigwig_paths` needs to be a pair of two paths, corresponding to
+    the profile of the plus and minus strand, respectively. If `shuffle` is
+    True, shuffle the dataset before each epoch.
     """
     # Maps set of coordinates to profiles
-    coords_to_vals = CoordsToVals(profile_bigwig_path)
+    coords_to_vals_list = [
+        (CoordsToVals(path_1), CoordsToVals(path_2)) \
+        for path_1, path_2 in profile_bigwig_paths
+    ]
 
     # Randomly samples from genome
     genome_sampler = GenomeIntervalSampler(
@@ -289,7 +321,7 @@ def data_loader_from_bedfile(
     
     # Coordinate batcher, yielding batches of positive and negative coordinates
     coords_batcher = CoordsBatcher(
-        peaks_bed_path, batch_size, negative_ratio, jitter_size, genome_sampler,
+        peaks_bed_paths, batch_size, negative_ratio, jitter_size, genome_sampler,
         shuffle_before_epoch=shuffle, seed=dataset_seed
     )
 
@@ -300,7 +332,7 @@ def data_loader_from_bedfile(
 
     # Dataset
     dataset = CoordDataset(
-        coords_batcher, coords_to_seq, coords_to_vals, revcomp=revcomp,
+        coords_batcher, coords_to_seq, coords_to_vals_list, revcomp=revcomp,
         return_coords=return_coords
     )
 
@@ -323,22 +355,72 @@ def main():
 
     base_path = "/users/amtseng/att_priors/data/processed/ENCODE/profile/labels"
 
-    peaks_bed_file = os.path.join(
-        base_path,
-        "SPI1/SPI1_ENCSR000BGW_K562_holdout_peakints.bed.gz"
-    )
-    profile_bigwig_file = os.path.join(
-        base_path,
-        "SPI1/SPI1_ENCSR000BGW_K562_pos.bw"
-    )
+    peaks_bed_files = [
+        os.path.join(base_path, ending) for ending in [
+            "SPI1/SPI1_ENCSR000BGQ_GM12878_holdout_peakints.bed.gz",
+            "SPI1/SPI1_ENCSR000BGW_K562_holdout_peakints.bed.gz",
+            "SPI1/SPI1_ENCSR000BIJ_GM12891_holdout_peakints.bed.gz",
+            "SPI1/SPI1_ENCSR000BUW_HL-60_holdout_peakints.bed.gz"
+        ]
+    ]
+            
+    profile_bigwig_files = [
+        (os.path.join(base_path, e_1), os.path.join(base_path, e_2)) \
+        for e_1, e_2 in [
+            ("SPI1/SPI1_ENCSR000BGQ_GM12878_neg.bw",
+            "SPI1/SPI1_ENCSR000BGQ_GM12878_pos.bw"),
+            ("SPI1/SPI1_ENCSR000BGW_K562_neg.bw",
+            "SPI1/SPI1_ENCSR000BGW_K562_pos.bw"),
+            ("SPI1/SPI1_ENCSR000BIJ_GM12891_neg.bw",
+            "SPI1/SPI1_ENCSR000BIJ_GM12891_pos.bw"),
+            ("SPI1/SPI1_ENCSR000BUW_HL-60_neg.bw",
+            "SPI1/SPI1_ENCSR000BUW_HL-60_pos.bw"),
+            ("SPI1/control_ENCSR000BGG_K562_neg.bw",
+            "SPI1/control_ENCSR000BGG_K562_pos.bw"),
+            ("SPI1/control_ENCSR000BGH_GM12878_neg.bw",
+            "SPI1/control_ENCSR000BGH_GM12878_pos.bw"),
+            ("SPI1/control_ENCSR000BIH_GM12891_neg.bw",
+            "SPI1/control_ENCSR000BIH_GM12891_pos.bw"),
+            ("SPI1/control_ENCSR000BVU_HL-60_neg.bw",
+            "SPI1/control_ENCSR000BVU_HL-60_pos.bw")
+        ]
+    ]
 
     loader = data_loader_from_bedfile(
-        peaks_bed_file, profile_bigwig_file,
+        peaks_bed_files, profile_bigwig_files,
         reference_fasta="/users/amtseng/genomes/hg38.fasta"
     )
     loader.dataset.on_epoch_start()
     start_time = datetime.now()
     for batch in tqdm.tqdm(loader, total=len(loader.dataset)):
         data = batch
+        break
     end_time = datetime.now()
     print("Time: %ds" % (end_time - start_time).seconds)
+
+    k = 2
+    rc_k = int(len(data[0]) / 2) + k
+
+    seqs, profiles, counts, statuses = data
+    
+    seq, prof, count, status = seqs[k], profiles[k], counts[k], statuses[k]
+    rc_seq, rc_prof, rc_count, rc_status = seqs[rc_k], profiles[rc_k], \
+        counts[rc_k], statuses[rc_k]
+    
+    print(util.one_hot_to_seq(seq))
+    print(util.one_hot_to_seq(rc_seq))
+
+    print(count, rc_count)
+    print(status, rc_status)
+
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(2, 1)
+    task_ind = 3
+    ax[0].plot(prof[task_ind][0])
+    ax[0].plot(prof[task_ind][1])
+
+    ax[1].plot(rc_prof[task_ind][0])
+    ax[1].plot(rc_prof[task_ind][1])
+
+    plt.show()
+    
