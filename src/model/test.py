@@ -1,33 +1,28 @@
 import torch
 import sacred
-import model.models as models
+import model.profile_models as profile_models
 import model.util as util
-import model.train_binary_model as train
 import numpy as np
 
 ex = sacred.Experiment("ex", ingredients=[
 ])
 
-@ex.automain
 def create_model():
-    bin_model = models.BinaryTFBindingPredictor(
-        input_length=1000,
+    prof_model = profile_models.ProfileTFBindingPredictor(
+        input_length=1346,
         input_depth=4,
-        num_conv_layers=3,
-        conv_filter_sizes=[15, 15, 13],
-        conv_stride=1,
-        conv_depths=[50, 50, 50],
-        max_pool_size=40,
-        max_pool_stride=40,
-        num_fc_layers=2,
-        fc_sizes=[50, 15],
-        num_outputs=1,
-        batch_norm=True,
-        conv_drop_rate=0.0,
-        fc_drop_rate=0.2
+        pred_length=1000,
+        num_tasks=3,
+        num_dil_conv_layers=7,
+        dil_conv_filter_sizes=([21] + ([3] * 6)),
+        dil_conv_stride=1,
+        dil_conv_dilations=[2 ** i for i in range(7)],
+        dil_conv_depths=([64] * 7),
+        prof_conv_kernel_size=75,
+        prof_conv_stride=1
     )
 
-    return bin_model
+    return prof_model
 
 
 class TestDataset(torch.utils.data.IterableDataset):
@@ -46,49 +41,33 @@ class TestDataset(torch.utils.data.IterableDataset):
     def on_epoch_start(self):
         pass
 
-
+model = None
+prof, count = None, None
+@ex.automain
 def main():
-    model = models.BinaryTFBindingPredictor(
-        input_length=1000,
-        input_depth=4,
-        num_conv_layers=3,
-        conv_filter_sizes=[15, 15, 13],
-        conv_stride=1,
-        conv_depths=[50, 50, 50],
-        max_pool_size=40,
-        max_pool_stride=40,
-        num_fc_layers=2,
-        fc_sizes=[50, 15],
-        num_outputs=1,
-        batch_norm=True,
-        conv_drop_rate=0.0,
-        fc_drop_rate=0.2
-    )
-    
+    global model, prof, count
     device = torch.device("cuda") if torch.cuda.is_available() \
         else torch.device("cpu")
 
+    model = create_model()
+
     model = model.to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    x = np.random.random([10, 4, 1346])
+    y = (
+        np.random.random([10, 3, 2, 1000]),
+        np.random.random([10, 3, 2]),
+        np.random.random([10, 3, 2, 1000]),
+        np.random.random([10, 3, 2])
+    )
 
-    x = np.random.random([10, 1000, 4])
-    y = np.random.randint(2, size=[10, 1])
     dataset = TestDataset([x], [y])
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=None, collate_fn=lambda x: x
     )
 
-    if torch.cuda.is_available:
-        torch.cuda.empty_cache()  # Clear GPU memory
-
-    train_epoch_loss = train.train_epoch(
-        data_loader, model, optimizer
+    prof, count = model(
+        util.place_tensor(torch.tensor(x)).float(),
+        util.place_tensor(torch.tensor(y[2])).float(),
+        util.place_tensor(torch.tensor(y[3])).float()
     )
-
-    val_epoch_loss, pred_vals, true_vals = train.eval_epoch(
-        data_loader, model, -1
-    )
-
-    util.save_model(model, "test.pt")
-    x = util.restore_model(models.BinaryTFBindingPredictor, "test.pt")

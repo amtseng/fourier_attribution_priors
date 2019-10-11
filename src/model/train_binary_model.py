@@ -5,13 +5,13 @@ import math
 import tqdm
 import os
 import model.util as util
-import model.models as models
+import model.binary_models as binary_models
 import model.performance as performance
 import feature.make_binary_dataset as make_binary_dataset
 
 MODEL_DIR = os.environ.get(
     "MODEL_DIR",
-    "/users/amtseng/att_priors/models/trained_models/"
+    "/users/amtseng/att_priors/binary_models/trained_models/"
 )
 
 train_ex = sacred.Experiment("train", ingredients=[
@@ -111,7 +111,7 @@ def create_model(
     """
     Creates a binary model using the configuration above.
     """
-    bin_model = models.BinaryTFBindingPredictor(
+    bin_model = binary_models.BinaryTFBindingPredictor(
         input_length=input_length,
         input_depth=input_depth,
         num_conv_layers=num_conv_layers,
