@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import sacred
 from datetime import datetime
-import util
+import feature.util as util
 
 dataset_ex = sacred.Experiment("dataset")
 

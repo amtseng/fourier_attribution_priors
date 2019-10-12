@@ -4,7 +4,7 @@ import pandas as pd
 import sacred
 from datetime import datetime
 import pyBigWig
-import util
+import feature.util as util
 
 dataset_ex = sacred.Experiment("dataset")
 
@@ -16,8 +16,11 @@ def config():
     # Path to chromosome sizes
     chrom_sizes = "/users/amtseng/genomes/hg38.canon.chrom.sizes"
 
-    # For each input sequence in the raw data, center it and pad to this length 
-    input_length = 1000
+    # The size of DNA sequences to fetch as input sequences
+    input_length = 1346
+
+    # The size of profiles to fetch for each coordinate
+    profile_length = 1000
 
     # One-hot encoding has this depth
     input_depth = 4
@@ -32,7 +35,7 @@ def config():
     batch_size = 128
 
     # Sample X negatives randomly from the genome for every positive example
-    negative_ratio = 20
+    negative_ratio = 1
 
     # Number of workers for the data loader
     num_workers = 10
@@ -93,10 +96,30 @@ class CoordsToVals:
     profiles.
     Arguments:
         `bigwig_path`: Path to BigWig containing profile
+        `center_size_to_use`: For each genomic coordinate, center it and pad it
+            on both sides to this length to get the final profile; if this is
+            smaller than the coordinate interval given, then the interval will
+            be cut to this size by centering
     """
-    def __init__(self, bigwig_path):
+    def __init__(self, bigwig_path, center_size_to_use):
         self.bigwig_path = bigwig_path
+        self.center_size_to_use = center_size_to_use
 
+    def _get_profile(self, chrom, start, end, bigwig_reader):
+        """
+        Fetches the profeile for the given coordinates, with an instantiated
+        BigWig reader. Returns the profile as a NumPy array of numbers. This may
+        pad or cut from the center to a specified length.
+        """
+        if self.center_size_to_use:
+            center = int(0.5 * (start + end))
+            half_size = int(0.5 * self.center_size_to_use)
+            left = center - half_size
+            right = center + self.center_size_to_use - half_size
+            return np.nan_to_num(bigwig_reader.values(chrom, left, right))
+        else:
+            return np.nan_to_num(bigwig_reader.values(chrom, start, end))
+        
     def _get_ndarray(self, coords):
         """
         From an iterable of coordinates, retrieves a 2D NumPy array of
@@ -104,9 +127,10 @@ class CoordsToVals:
         to be of the same length. 
         """
         reader = pyBigWig.open(self.bigwig_path)
-        return np.array(
-            [np.nan_to_num(reader.values(*coord)) for coord in coords]
-        )
+        return np.stack([
+            self._get_profile(chrom, start, end, reader) \
+            for chrom, start, end in coords
+        ])
 
     def __call__(self, coords):
         return self._get_ndarray(coords)
@@ -226,9 +250,8 @@ class CoordDataset(torch.utils.data.IterableDataset):
     def get_batch(self, index):
         """
         Returns a batch, which consists of an N x L x 4 NumPy array of 1-hot
-        encoded sequence, an N x T x 2 x L NumPy array of profiles, an N x T x 2
-        NumPy array of read counts, and a 1D length N NumPy array of statuses.
-        For the profiles and counts, the profile for each of the T tasks in
+        encoded sequence, an N x T x 2 x L NumPy array of profiles, and a 1D
+        length-N NumPy array of statuses. The profile for each of the T tasks in
         `coords_to_vals_list` is returned, in the same order as in this list,
         and each task contains 2 tracks, for the plus and minus strand,
         respectively.
@@ -244,7 +267,6 @@ class CoordDataset(torch.utils.data.IterableDataset):
             np.stack([ctv_1(coords), ctv_2(coords)], axis=1) \
             for ctv_1, ctv_2 in self.coords_to_vals_list
         ], axis=1)
-        counts = np.sum(profiles, axis=3)
 
         # If reverse complementation was done, double sizes of everything else
         if self.revcomp:
@@ -254,15 +276,14 @@ class CoordDataset(torch.utils.data.IterableDataset):
                 # strand to be the plus strand, but still 5' to 3')
                 [profiles, np.flip(profiles, axis=(2, 3))]
             )
-            counts = np.concatenate([counts, counts])
             status = np.concatenate([status, status])
 
         if self.return_coords:
             if self.revcomp:
                 coords_ret = np.concatenate([coords.values, coords.values])
-            return coords_ret, seqs, profiles, counts, status
+            return coords_ret, seqs, profiles, status
         else:
-            return seqs, profiles, counts, status
+            return seqs, profiles, status
 
     def __iter__(self):
         """
@@ -295,10 +316,10 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
 
 @dataset_ex.capture
-def data_loader_from_bedfile(
+def data_loader_from_beds_and_bigwigs(
     peaks_bed_paths, profile_bigwig_paths, batch_size, reference_fasta,
-    chrom_sizes, input_length, negative_ratio, num_workers, revcomp,
-    jitter_size, dataset_seed, shuffle=True, return_coords=False
+    chrom_sizes, input_length, profile_length, negative_ratio, num_workers,
+    revcomp, jitter_size, dataset_seed, shuffle=True, return_coords=False
 ):
     """
     From a list of paths to gzipped BED files containing coordinates of positive
@@ -310,7 +331,10 @@ def data_loader_from_bedfile(
     """
     # Maps set of coordinates to profiles
     coords_to_vals_list = [
-        (CoordsToVals(path_1), CoordsToVals(path_2)) \
+        (
+            CoordsToVals(path_1, profile_length),
+            CoordsToVals(path_2, profile_length)
+        )
         for path_1, path_2 in profile_bigwig_paths
     ]
 
@@ -386,7 +410,7 @@ def main():
         ]
     ]
 
-    loader = data_loader_from_bedfile(
+    loader = data_loader_from_beds_and_bigwigs(
         peaks_bed_files, profile_bigwig_files,
         reference_fasta="/users/amtseng/genomes/hg38.fasta"
     )
@@ -403,14 +427,12 @@ def main():
 
     seqs, profiles, counts, statuses = data
     
-    seq, prof, count, status = seqs[k], profiles[k], counts[k], statuses[k]
-    rc_seq, rc_prof, rc_count, rc_status = seqs[rc_k], profiles[rc_k], \
-        counts[rc_k], statuses[rc_k]
+    seq, prof, status = seqs[k], profiles[k], statuses[k]
+    rc_seq, rc_prof, rc_status = seqs[rc_k], profiles[rc_k], statuses[rc_k]
     
     print(util.one_hot_to_seq(seq))
     print(util.one_hot_to_seq(rc_seq))
 
-    print(count, rc_count)
     print(status, rc_status)
 
     import matplotlib.pyplot as plt

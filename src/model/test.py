@@ -11,7 +11,7 @@ def create_model():
     prof_model = profile_models.ProfileTFBindingPredictor(
         input_length=1346,
         input_depth=4,
-        pred_length=1000,
+        profile_length=1000,
         num_tasks=3,
         num_dil_conv_layers=7,
         dil_conv_filter_sizes=([21] + ([3] * 6)),
@@ -53,21 +53,26 @@ def main():
 
     model = model.to(device)
 
-    x = np.random.random([10, 4, 1346])
+    np.random.seed(20191013)
+    x = np.random.randint(2, size=[10, 4, 1346])
     y = (
-        np.random.random([10, 3, 2, 1000]),
-        np.random.random([10, 3, 2]),
-        np.random.random([10, 3, 2, 1000]),
-        np.random.random([10, 3, 2])
+        np.random.randint(5, size=[10, 3, 2, 1000]),
+        np.random.randint(5, size=[10, 3, 2, 1000])
     )
 
-    dataset = TestDataset([x], [y])
-    data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=None, collate_fn=lambda x: x
-    )
+    # dataset = TestDataset([x], [y])
+    # data_loader = torch.utils.data.DataLoader(
+    #     dataset, batch_size=None, collate_fn=lambda x: x
+    # )
 
-    prof, count = model(
-        util.place_tensor(torch.tensor(x)).float(),
-        util.place_tensor(torch.tensor(y[2])).float(),
-        util.place_tensor(torch.tensor(y[3])).float()
-    )
+    torch.autograd.set_detect_anomaly(True)
+
+    input_seq = util.place_tensor(torch.tensor(x)).float()
+    tf_prof = util.place_tensor(torch.tensor(y[0])).float()
+    cont_prof = util.place_tensor(torch.tensor(y[1])).float()
+
+    pred_prof, pred_count = model(input_seq, cont_prof)
+
+    loss = model.correctness_loss(tf_prof, pred_prof, pred_count, 1)
+
+    loss.backward()

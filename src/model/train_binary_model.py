@@ -11,7 +11,7 @@ import feature.make_binary_dataset as make_binary_dataset
 
 MODEL_DIR = os.environ.get(
     "MODEL_DIR",
-    "/users/amtseng/att_priors/binary_models/trained_models/"
+    "/users/amtseng/att_priors/models/trained_binary_models/"
 )
 
 train_ex = sacred.Experiment("train", ingredients=[
@@ -140,7 +140,7 @@ def model_loss(
     Computes the loss for the model.
     Arguments:
         `model`: the model being trained
-        `true_seqs`: a B x C tensor, where B is the batch size and C is the
+        `true_vals`: a B x C tensor, where B is the batch size and C is the
             number of output tasks, containing the true binary values
         `probs`: a B x C tensor containing the predicted probabilities
         `input_grads`: a B x C x L x D tensor, where B is the batch size, C is
@@ -152,16 +152,16 @@ def model_loss(
     If the attribution prior loss is not computed at all, then 0 will be in its
     place, instead.
     """
-    pred_loss = model.prediction_loss(true_vals, probs, avg_class_loss)
+    corr_loss = model.correctness_loss(true_vals, probs, avg_class_loss)
    
     if not att_prior_loss_weight:
-        return pred_loss, (pred_loss, torch.zeros(1))
+        return corr_loss, (corr_loss, torch.zeros(1))
     
     att_prior_loss = model.att_prior_loss(
         true_vals, input_grads, att_prior_pos_limit, att_prior_pos_weight
     )
-    final_loss = pred_loss + (att_prior_loss_weight * att_prior_loss)
-    return final_loss, (pred_loss, att_prior_loss)
+    final_loss = corr_loss + (att_prior_loss_weight * att_prior_loss)
+    return final_loss, (corr_loss, att_prior_loss)
 
 
 @train_ex.capture
@@ -169,7 +169,7 @@ def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
     """
     Runs the data from the training loader once through the model, and performs
     backpropagation. Returns a list of losses for the batches, a list of
-    correction losses specifically for the batches, and a list of attribution
+    correctness losses specifically for the batches, and a list of attribution
     prior losses specifically for the batches. If the attribution prior loss is
     not computed, then the list will have all 0s.
     """
@@ -182,7 +182,7 @@ def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
     model.train()  # Switch to training mode
     torch.set_grad_enabled(True)
 
-    batch_losses, pred_losses, att_losses = [], [], []
+    batch_losses, corr_losses, att_losses = [], [], []
     for input_seqs, output_vals in t_iter:
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
         output_vals = util.place_tensor(torch.tensor(output_vals)).float()
@@ -212,20 +212,20 @@ def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
             input_grads = None
 
         optimizer.zero_grad()  # Clear gradients from last batch
-        loss, (pred_loss, att_loss) = model_loss(
+        loss, (corr_loss, att_loss) = model_loss(
             model, output_vals, probs, input_grads
         )
         loss.backward()  # Compute gradient
         optimizer.step()  # Update weights through backprop
         
         batch_losses.append(loss.item())
-        pred_losses.append(pred_loss.item())
+        corr_losses.append(corr_loss.item())
         att_losses.append(att_loss.item())
         t_iter.set_description(
             "\tTraining loss: %6.10f" % loss.item()
         )
 
-    return batch_losses, pred_losses, att_losses
+    return batch_losses, corr_losses, att_losses
 
 
 @train_ex.capture
@@ -233,7 +233,7 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
     """
     Runs the data from the validation loader once through the model, and
     saves the output results. Returns a list of losses for the batches, a list
-    of correction losses specifically for the batches, a list of attribution
+    of correctness losses specifically for the batches, a list of attribution
     prior losses specifically for the batches, a NumPy array of predicted
     probabilities, and a NumPy array of true values. If the attribution prior
     loss is not computed, then the list will have all 0s.
@@ -246,7 +246,7 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
 
     model.eval()  # Switch to evaluation mode
 
-    batch_losses, pred_losses, att_losses = [], [], []
+    batch_losses, corr_losses, att_losses = [], [], []
     pred_val_arr, true_val_arr = [], []
     for input_seqs, output_vals in t_iter:
         true_val_arr.append(output_vals)
@@ -284,12 +284,12 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
             pred_val_arr.append(probs.detach().to("cpu").numpy())
             input_grads = None
 
-        loss, (pred_loss, att_loss) = model_loss(
+        loss, (corr_loss, att_loss) = model_loss(
             model, output_vals, probs, input_grads
         )
 
         batch_losses.append(loss.item())
-        pred_losses.append(pred_loss.item())
+        corr_losses.append(corr_loss.item())
         att_losses.append(att_loss.item())
 
         t_iter.set_description(
@@ -299,7 +299,7 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
     pred_vals = np.concatenate(pred_val_arr)
     true_vals = np.concatenate(true_val_arr)
 
-    return batch_losses, pred_losses, att_losses, pred_vals, true_vals
+    return batch_losses, corr_losses, att_losses, pred_vals, true_vals
 
 
 @train_ex.capture
@@ -337,7 +337,7 @@ def train(
         if torch.cuda.is_available:
             torch.cuda.empty_cache()  # Clear GPU memory
 
-        t_batch_losses, t_pred_losses, t_att_losses = train_epoch(
+        t_batch_losses, t_corr_losses, t_att_losses = train_epoch(
             train_loader, model, optimizer
         )
         train_epoch_loss = np.nanmean(t_batch_losses)
@@ -348,10 +348,10 @@ def train(
         )
         _run.log_scalar("train_epoch_loss", train_epoch_loss)
         _run.log_scalar("train_batch_losses", t_batch_losses)
-        _run.log_scalar("train_pred_losses", t_pred_losses)
+        _run.log_scalar("train_corr_losses", t_corr_losses)
         _run.log_scalar("train_att_losses", t_att_losses)
 
-        v_batch_losses, v_pred_losses, v_att_losses, pred_vals, true_vals = \
+        v_batch_losses, v_corr_losses, v_att_losses, pred_vals, true_vals = \
         eval_epoch(
             val_loader, model
         )
@@ -363,7 +363,7 @@ def train(
         )
         _run.log_scalar("val_epoch_loss", val_epoch_loss)
         _run.log_scalar("val_batch_losses", v_batch_losses)
-        _run.log_scalar("val_pred_losses", v_pred_losses)
+        _run.log_scalar("val_corr_losses", v_corr_losses)
         _run.log_scalar("val_att_losses", v_att_losses)
 
         # Compute evaluation metrics and log them
@@ -410,6 +410,6 @@ def run_training(train_bed_path, val_bed_path):
 def main():
     train_bedfile = "/users/amtseng/tfmodisco/data/processed/DREAM/tests/SPI1_test_2000.tsv.gz"
     val_bedfile = train_bedfile
-    train_bedfile = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/labels/SPI1.train.labels.tsv.gz"
-    val_bedfile = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/heldout_chr/training_celltypes/labels/SPI1.train.labels.tsv.gz"
+    # train_bedfile = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/labels/SPI1.train.labels.tsv.gz"
+    # val_bedfile = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/heldout_chr/training_celltypes/labels/SPI1.train.labels.tsv.gz"
     run_training(train_bedfile, val_bedfile)

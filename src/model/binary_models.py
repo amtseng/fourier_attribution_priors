@@ -163,7 +163,7 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         return probs
 
 
-    def prediction_loss(self, true_vals, probs, average_classes=False):
+    def correctness_loss(self, true_vals, probs, average_classes=False):
         """
         Computes the binary cross-entropy loss.
         Arguments:

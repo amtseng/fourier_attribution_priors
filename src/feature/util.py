@@ -31,7 +31,9 @@ class CoordsToSeq():
     Arguments:
         `genome_fasta_path`: Path to the genome assembly FASTA
         `center_size_to_use`: For each genomic coordinate, center it and pad it
-            on both sides to this length to get the final sequence
+            on both sides to this length to get the final sequence; if this is
+            smaller than the coordinate interval given, then the interval will
+            be cut to this size by centering
     """
     def __init__(self, genome_fasta_path, center_size_to_use=None):
         self.center_size_to_use = center_size_to_use
@@ -53,15 +55,14 @@ class CoordsToSeq():
     def _get_seq(self, chrom, start, end, gen_reader):
         """
         Fetches the FASTA sequence for the given coordinates, with an
-        instantiated genome reader. Returns the sequence string.
-        This function performs the necessary padding to map from a coordinate
-        to a full sequence to be featurized.
+        instantiated genome reader. Returns the sequence string. This may pad
+        or cut from the center to a specified length.
         """
         if self.center_size_to_use:
             center = int(0.5 * (start + end))
-            pad = int(0.5 * self.center_size_to_use)
-            left = center - pad
-            right = center + self.center_size_to_use - pad
+            half_size = int(0.5 * self.center_size_to_use)
+            left = center - half_size
+            right = center + self.center_size_to_use - half_size
             return gen_reader[chrom][left:right].seq
         else:
             return gen_reader[chrom][start:end].seq
