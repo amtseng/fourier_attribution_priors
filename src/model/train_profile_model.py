@@ -247,7 +247,7 @@ def eval_epoch(val_loader, model, num_tasks, att_prior_loss_weight):
         corr_losses.append(corr_loss.item())
         att_losses.append(att_loss.item())
         t_iter.set_description(
-            "\tTraining loss: %6.10f" % loss.item()
+            "\tValidation loss: %6.10f" % loss.item()
         )
 
     return batch_losses, corr_losses, att_losses
@@ -353,45 +353,46 @@ def run_training(train_peak_beds, val_peak_beds, prof_bigwigs):
 
 @train_ex.automain
 def main():
-    base_path = "/users/amtseng/att_priors/data/processed/ENCODE/profile/labels"
+    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/profile/OLD/SPI1"
 
     train_peak_beds = [
         os.path.join(base_path, ending) for ending in [
-            "SPI1/SPI1_ENCSR000BGQ_GM12878_train_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BGW_K562_train_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BIJ_GM12891_train_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BUW_HL-60_train_peakints.bed.gz"
+            "SPI1_ENCSR000BGQ_GM12878_train_peakints.bed.gz",
+            "SPI1_ENCSR000BGW_K562_train_peakints.bed.gz",
+            "SPI1_ENCSR000BIJ_GM12891_train_peakints.bed.gz",
+            "SPI1_ENCSR000BUW_HL-60_train_peakints.bed.gz"
         ]
     ]
 
     val_peak_beds = [
         os.path.join(base_path, ending) for ending in [
-            "SPI1/SPI1_ENCSR000BGQ_GM12878_holdout_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BGW_K562_holdout_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BIJ_GM12891_holdout_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BUW_HL-60_holdout_peakints.bed.gz"
+            "SPI1_ENCSR000BGQ_GM12878_holdout_peakints.bed.gz",
+            "SPI1_ENCSR000BGW_K562_holdout_peakints.bed.gz",
+            "SPI1_ENCSR000BIJ_GM12891_holdout_peakints.bed.gz",
+            "SPI1_ENCSR000BUW_HL-60_holdout_peakints.bed.gz"
         ]
     ]
             
     prof_bigwigs = [
         (os.path.join(base_path, e_1), os.path.join(base_path, e_2)) \
         for e_1, e_2 in [
-            ("SPI1/SPI1_ENCSR000BGQ_GM12878_neg.bw",
-            "SPI1/SPI1_ENCSR000BGQ_GM12878_pos.bw"),
-            ("SPI1/SPI1_ENCSR000BGW_K562_neg.bw",
-            "SPI1/SPI1_ENCSR000BGW_K562_pos.bw"),
-            ("SPI1/SPI1_ENCSR000BIJ_GM12891_neg.bw",
-            "SPI1/SPI1_ENCSR000BIJ_GM12891_pos.bw"),
-            ("SPI1/SPI1_ENCSR000BUW_HL-60_neg.bw",
-            "SPI1/SPI1_ENCSR000BUW_HL-60_pos.bw"),
-            ("SPI1/control_ENCSR000BGG_K562_neg.bw",
-            "SPI1/control_ENCSR000BGG_K562_pos.bw"),
-            ("SPI1/control_ENCSR000BGH_GM12878_neg.bw",
-            "SPI1/control_ENCSR000BGH_GM12878_pos.bw"),
-            ("SPI1/control_ENCSR000BIH_GM12891_neg.bw",
-            "SPI1/control_ENCSR000BIH_GM12891_pos.bw"),
-            ("SPI1/control_ENCSR000BVU_HL-60_neg.bw",
-            "SPI1/control_ENCSR000BVU_HL-60_pos.bw")
+            ("SPI1_ENCSR000BGQ_GM12878_neg.bw",
+             "SPI1_ENCSR000BGQ_GM12878_pos.bw"),
+            ("SPI1_ENCSR000BGW_K562_neg.bw",
+             "SPI1_ENCSR000BGW_K562_pos.bw"),
+            ("SPI1_ENCSR000BIJ_GM12891_neg.bw",
+             "SPI1_ENCSR000BIJ_GM12891_pos.bw"),
+            ("SPI1_ENCSR000BUW_HL-60_neg.bw",
+             "SPI1_ENCSR000BUW_HL-60_pos.bw"),
+
+            ("control_ENCSR000BGH_GM12878_neg.bw",
+             "control_ENCSR000BGH_GM12878_pos.bw"),
+            ("control_ENCSR000BGG_K562_neg.bw",
+             "control_ENCSR000BGG_K562_pos.bw"),
+            ("control_ENCSR000BIH_GM12891_neg.bw",
+             "control_ENCSR000BIH_GM12891_pos.bw"),
+            ("control_ENCSR000BVU_HL-60_neg.bw",
+             "control_ENCSR000BVU_HL-60_pos.bw")
         ]
     ]
 

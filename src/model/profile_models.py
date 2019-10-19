@@ -10,15 +10,15 @@ def multinomial_log_probs(category_log_probs, trials, query_counts):
     distributions (that all have the same number of classes), and returns D
     probabilities corresponding to each distribution.
     Arguments:
-        `category_log_probs`: a D x N tensor containing log probabilities of
-            seeing each of the N classes/categories
+        `category_log_probs`: a D x N tensor containing log probabilities (base
+            e) of seeing each of the N classes/categories
         `trials`: a D-tensor containing the total number of trials for each
             distribution (can be different numbers)
         `query_counts`: a D x N tensor containing the observed count of eac
             category in each distribution; the probability is computed for these
             observations
-    Returns a D-tensor containing the log probabilities of each observed query
-    with its corresponding distribution.
+    Returns a D-tensor containing the log probabilities (base e) of each
+    observed query with its corresponding distribution.
     Note that D can be replaced with any shape (i.e. only the last dimension is
     reduced).
     """
@@ -170,9 +170,10 @@ class ProfileTFBindingPredictor(torch.nn.Module):
                 length
             `cont_profs`: a B x T x 2 x O tensor, where T is the number of
                 tasks, and O is the output sequence length
-        Returns the predicted (normalized) profiles for each task (both plus
-        and minus strands) (a B x T x 2 x O tensor), and the predicted log
-        counts for each task (both plus and minus strands) (a B x T x 2) tensor.
+        Returns the predicted profiles (unnormalized logits) for each task (both
+        plus and minus strands) (a B x T x 2 x O tensor), and the predicted log
+        counts (base e) for each task (both plus and minus strands)
+        (a B x T x 2) tensor.
         """
         batch_size = input_seqs.size(0)
         input_length = input_seqs.size(2)
@@ -262,7 +263,7 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             `logit_pred_profs`: a B x T x 2 x O tensor containing the predicted
                 profile _logits_
             `log_pred_counts`: a B x T x 2 tensor containing the predicted log
-                read counts
+                read counts (base e)
             `count_loss_weight`: amount to weight the portion of the loss for
                 the counts
         Returns a scalar loss tensor.
@@ -283,11 +284,12 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         # Compute the log probabilities based on multinomial distributions,
         # each one is based on predicted probabilities, one for each track
 
-        # Convert logits to log probabilities and normalize
+        # Convert logits to probabilities by putting through sigmoid
+        # log_pred_profs = torch.nn.functional.log_softmax(
+        #     logit_pred_profs, dim=2
+        # )
         sig_pred_profs = self.sigmoid(logit_pred_profs)
-        sig_sums = torch.sum(sig_pred_profs, dim=-1).unsqueeze(-1).repeat(
-            1, 1, sig_pred_profs.size(-1)
-        )
+        sig_sums = torch.sum(sig_pred_profs, dim=-1).unsqueeze(-1)
         norm_sig_pred_profs = torch.div(sig_pred_profs, sig_sums)
         log_pred_profs = torch.log(norm_sig_pred_profs)  # Log probs
 
@@ -308,3 +310,54 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         count_loss = torch.mean(batch_count_loss)  # average across batch
 
         return prof_loss + (count_loss_weight * count_loss)
+
+    def att_prior_loss(self, status, input_grads, pos_limit, pos_weight):
+        """
+        Computes an attribution prior loss for some given training examples.
+        Arguments:
+            `status`: a B-tensor, where B is the batch size; each entry is 1 if
+                that coordinate is to be treated as a positive example, and 0
+                otherwise
+            `input_grads`: a B x L x D tensor, where B is the batch size, L is
+                the length of the input, and D is the dimensionality of each
+                input base; this needs to be the gradients of the input with
+                respect to the output (for multiple tasks, this gradient needs
+                to be aggregated)
+            `pos_limit`: the maximum integer frequency index, k, to consider for
+                the positive loss; this corresponds to a frequency cut-off of
+                pi * k / L; k should be less than L / 2
+            `pos_weight`: the amount to weight the positive loss by, to give it
+                a similar scale as the negative loss
+        Returns a single scalar Tensor consisting of the attribution loss for
+        the batch.
+        """
+        relu = torch.nn.ReLU()
+        max_rect_grads = torch.max(relu(input_grads), dim=3)[0]
+
+        neg_grads = max_rect_grads[true_vals == 0]
+        pos_grads = max_rect_grads[true_vals == 1]
+
+        # Loss for positives
+        if pos_grads.nelement():
+            pos_grads_comp = torch.stack(
+                [pos_grads, place_tensor(torch.zeros(pos_grads.size()))], dim=2
+            )
+            # Magnitude of the Fourier coefficients:
+            pos_fft = torch.fft(pos_grads_comp, 1)
+            pos_mags = torch.norm(pos_fft, dim=2)
+            pos_mags /= torch.sum(pos_mags, dim=1, keepdim=True)  # Normalize
+            # Cut off DC and high-frequency components:
+            pos_mags = pos_mags[:, 1:pos_limit]
+            pos_score = torch.sum(pos_mags, dim=1)
+            pos_loss = 1 - pos_score
+            pos_loss_mean = torch.mean(pos_loss)
+        else:
+            pos_loss_mean = 0
+        # Loss for negatives
+        if neg_grads.nelement():
+            neg_loss = torch.sum(neg_grads, dim=1)
+            neg_loss_mean = torch.mean(neg_loss)
+        else:
+            neg_loss_mean = 0
+
+        return (pos_weight * pos_loss_mean) + neg_loss_mean
