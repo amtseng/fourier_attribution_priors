@@ -1,7 +1,7 @@
 import torch
 import math
 import numpy as np
-from model.util import sanitize_sacred_arguments, convolution_size
+from model.util import sanitize_sacred_arguments, convolution_size, place_tensor
 
 def multinomial_log_probs(category_log_probs, trials, query_counts):
     """
@@ -107,7 +107,7 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         # any padding (i.e. "valid" padding)
         self.last_dil_conv_size = last_out_size
 
-        # ReLU activation for the convolutional layers
+        # ReLU activation for the convolutional layers and attribution prior
         self.relu = torch.nn.ReLU()
 
         # Profile prediction:
@@ -316,13 +316,13 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         Computes an attribution prior loss for some given training examples.
         Arguments:
             `status`: a B-tensor, where B is the batch size; each entry is 1 if
-                that coordinate is to be treated as a positive example, and 0
+                that example is to be treated as a positive example, and 0
                 otherwise
             `input_grads`: a B x L x D tensor, where B is the batch size, L is
                 the length of the input, and D is the dimensionality of each
                 input base; this needs to be the gradients of the input with
                 respect to the output (for multiple tasks, this gradient needs
-                to be aggregated)
+                to be aggregated); this should be *gradient times input*
             `pos_limit`: the maximum integer frequency index, k, to consider for
                 the positive loss; this corresponds to a frequency cut-off of
                 pi * k / L; k should be less than L / 2
@@ -331,21 +331,20 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         Returns a single scalar Tensor consisting of the attribution loss for
         the batch.
         """
-        relu = torch.nn.ReLU()
-        max_rect_grads = torch.max(relu(input_grads), dim=3)[0]
+        max_rect_grads = torch.max(self.relu(input_grads), dim=2)[0]
 
-        neg_grads = max_rect_grads[true_vals == 0]
-        pos_grads = max_rect_grads[true_vals == 1]
+        neg_grads = max_rect_grads[status == 0]
+        pos_grads = max_rect_grads[status == 1]
 
         # Loss for positives
         if pos_grads.nelement():
-            pos_grads_comp = torch.stack(
+            pos_grads_complex = torch.stack(
                 [pos_grads, place_tensor(torch.zeros(pos_grads.size()))], dim=2
-            )
-            # Magnitude of the Fourier coefficients:
-            pos_fft = torch.fft(pos_grads_comp, 1)
+            )  # Convert to complex number format: a -> a + 0i
+            # Magnitude of the Fourier coefficients, normalized:
+            pos_fft = torch.fft(pos_grads_complex, 1)
             pos_mags = torch.norm(pos_fft, dim=2)
-            pos_mags /= torch.sum(pos_mags, dim=1, keepdim=True)  # Normalize
+            pos_mags = pos_mags / torch.sum(pos_mags, dim=1, keepdim=True)
             # Cut off DC and high-frequency components:
             pos_mags = pos_mags[:, 1:pos_limit]
             pos_score = torch.sum(pos_mags, dim=1)

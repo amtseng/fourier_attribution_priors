@@ -232,10 +232,10 @@ class BinaryTFBindingPredictor(torch.nn.Module):
             pos_grads_comp = torch.stack(
                 [pos_grads, place_tensor(torch.zeros(pos_grads.size()))], dim=2
             )
-            # Magnitude of the Fourier coefficients:
+            # Magnitude of the Fourier coefficients, normalized:
             pos_fft = torch.fft(pos_grads_comp, 1)
             pos_mags = torch.norm(pos_fft, dim=2)
-            pos_mags /= torch.sum(pos_mags, dim=1, keepdim=True)  # Normalize
+            pos_mags = pos_mags / torch.sum(pos_mags, dim=1, keepdim=True)
             # Cut off DC and high-frequency components:
             pos_mags = pos_mags[:, 1:pos_limit]
             pos_score = torch.sum(pos_mags, dim=1)

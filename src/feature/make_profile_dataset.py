@@ -209,8 +209,8 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
 
         neg_coords = self.genome_sampler.sample_intervals(self.neg_per_batch)
         status = np.concatenate(
-            [pos_coords[:,3], np.zeros(len(neg_coords), dtype=int)]
-        )
+            [pos_coords[:,3], np.zeros(len(neg_coords))]
+        ).astype(int)
         return np.concatenate([pos_coords[:,:3], neg_coords]), status
 
     def __len__(self):
@@ -377,7 +377,7 @@ def main():
     import os
     import tqdm
 
-    base_path = "/users/amtseng/att_priors/data/processed/ENCODE/profile/labels"
+    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/profile/OLD"
 
     peaks_bed_files = [
         os.path.join(base_path, ending) for ending in [
@@ -425,7 +425,7 @@ def main():
     k = 2
     rc_k = int(len(data[0]) / 2) + k
 
-    seqs, profiles, counts, statuses = data
+    seqs, profiles, statuses = data
     
     seq, prof, status = seqs[k], profiles[k], statuses[k]
     rc_seq, rc_prof, rc_status = seqs[rc_k], profiles[rc_k], statuses[rc_k]

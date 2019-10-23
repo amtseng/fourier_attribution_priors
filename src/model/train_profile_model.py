@@ -54,13 +54,13 @@ def config(dataset):
     counts_loss_weight = 100
 
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
-    att_prior_loss_weight = 0.0
+    att_prior_loss_weight = 1.0
 
     # Maximum frequency integer to consider for a positive attribution prior
     att_prior_pos_limit = 160
 
     # Weight for positives within the attribution prior loss
-    att_prior_pos_weight = 0.1
+    att_prior_pos_weight = 1.0
 
     # Number of training epochs
     num_epochs = 10
@@ -121,7 +121,7 @@ def create_model(
 
 @train_ex.capture
 def model_loss(
-    model, true_profs, log_pred_profs, log_pred_counts, input_grads,
+    model, true_profs, log_pred_profs, log_pred_counts, status, input_grads,
     counts_loss_weight, att_prior_loss_weight, att_prior_pos_limit,
     att_prior_pos_weight, return_loss_parts=False
 ):
@@ -136,6 +136,11 @@ def model_loss(
             profile predictions as logits
         `log_pred_counts`: a B x T x 2 tensor consisting of the log counts
             predictions
+        `status`: a B-tensor, where B is the batch size; each entry is 1 if that
+            that example is to be treated as a positive example, and 0 otherwise
+        `input_grads`: a B x I x D tensor, where I is the input length and D is
+            the input depth; this is the gradient of the output with respect to
+            the input, times the input itself
     Returns a scalar Tensor containing the loss for the given batch, as well as
     a pair consisting of the correctness loss and the attribution prior loss.
     If the attribution prior loss is not computed at all, then 0 will be in its
@@ -145,8 +150,15 @@ def model_loss(
         true_profs, log_pred_profs, log_pred_counts, counts_loss_weight
     )
     
-    return corr_loss, (corr_loss, torch.zeros(1))
+    if not att_prior_loss_weight:
+        return corr_loss, (corr_loss, torch.zeros(1))
     
+    att_prior_loss = model.att_prior_loss(
+        status, input_grads, att_prior_pos_limit, att_prior_pos_weight
+    )
+    final_loss = corr_loss + (att_prior_loss_weight * att_prior_loss)
+    return final_loss, (corr_loss, att_prior_loss)
+
 
 @train_ex.capture
 def train_epoch(
@@ -180,13 +192,28 @@ def train_epoch(
         
         # Make channels come first in input
         input_seqs = torch.transpose(input_seqs, 1, 2)
-
-        log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
-        input_grads = None
+        
+        if att_prior_loss_weight > 0:
+            input_seqs.requires_grad = True  # Set gradient required
+            log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
+            model.zero_grad()  # Clear gradients
+            log_pred_counts.backward(
+                util.place_tensor(torch.ones(log_pred_counts.size())),
+                retain_graph=True
+            )  # Sum gradients across strands and tasks
+            input_grads = input_seqs.grad * input_seqs  # Gradient * input
+            input_grads = input_grads.transpose(1, 2)  # B x I x D
+            status = util.place_tensor(torch.tensor(statuses))
+            status[status > 0] = 1  # Whenever not negative example, set to 1
+            input_seqs.requires_grad = False  # Reset gradient required
+        else:
+            log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
+            status, input_grads = None, None
 
         optimizer.zero_grad()  # Clear gradients from last batch
         loss, (corr_loss, att_loss) = model_loss(
-            model, tf_profs, log_pred_profs, log_pred_counts, input_grads
+            model, tf_profs, log_pred_profs, log_pred_counts, status,
+            input_grads
         )
 
         loss.backward()  # Compute gradient
@@ -232,15 +259,27 @@ def eval_epoch(val_loader, model, num_tasks, att_prior_loss_weight):
         
         # Make channels come first in input
         input_seqs = torch.transpose(input_seqs, 1, 2)
-    
-        torch.set_grad_enabled(False)
-        model.zero_grad()  # Clear gradients from last batch
 
-        log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
-        input_grads = None
+        if att_prior_loss_weight > 0:
+            input_seqs.requires_grad = True  # Set gradient required
+            log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
+            model.zero_grad()  # Clear gradients
+            log_pred_counts.backward(
+                util.place_tensor(torch.ones(log_pred_counts.size())),
+                retain_graph=True
+            )  # Sum gradients across strands and tasks
+            input_grads = input_seqs.grad * input_seqs  # Gradient * input
+            input_grads = input_grads.transpose(1, 2)  # B x I x D
+            status = util.place_tensor(torch.tensor(statuses))
+            status[status > 0] = 1  # Whenever not negative example, set to 1
+            input_seqs.requires_grad = False  # Reset gradient required
+        else:
+            log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
+            status, input_grads = None, None
 
         loss, (corr_loss, att_loss) = model_loss(
-            model, tf_profs, log_pred_profs, log_pred_counts, input_grads
+            model, tf_profs, log_pred_profs, log_pred_counts, status,
+            input_grads
         )
 
         batch_losses.append(loss.item())
