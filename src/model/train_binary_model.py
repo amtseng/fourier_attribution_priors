@@ -51,7 +51,7 @@ def config(dataset):
     fc_sizes = [50, 15]
 
     # Number of outputs to predict
-    num_outputs = 1
+    num_outputs = 4
 
     # Whether to average the positive and negative correctness losses
     avg_class_loss = True
@@ -133,8 +133,9 @@ def create_model(
 
 @train_ex.capture
 def model_loss(
-    model, true_vals, probs, input_grads, avg_class_loss, att_prior_loss_weight,
-    att_prior_pos_limit, att_prior_pos_weight, return_loss_parts=False
+    model, true_vals, probs, status, input_grads, avg_class_loss,
+    att_prior_loss_weight, att_prior_pos_limit, att_prior_pos_weight,
+    return_loss_parts=False
 ):
     """
     Computes the loss for the model.
@@ -143,10 +144,11 @@ def model_loss(
         `true_vals`: a B x C tensor, where B is the batch size and C is the
             number of output tasks, containing the true binary values
         `probs`: a B x C tensor containing the predicted probabilities
-        `input_grads`: a B x C x L x D tensor, where B is the batch size, C is
-            the number of output tasks, L is the length of the input, and D is
-            the dimensionality of each input base; this needs to be the
-            gradients of the input with respect to each output task
+        `status`: a B-tensor, where B is the batch size; each entry is 1 if that
+            that example is to be treated as a positive example, and 0 otherwise
+        `input_grads`: a B x L x D tensor, where L is the output length and D is
+            the input depth; this is the gradient of the output with respect to
+            the input, times the input itself
     Returns a scalar Tensor containing the loss for the given batch, as well as
     a pair consisting of the correctness loss and the attribution prior loss.
     If the attribution prior loss is not computed at all, then 0 will be in its
@@ -158,7 +160,7 @@ def model_loss(
         return corr_loss, (corr_loss, torch.zeros(1))
     
     att_prior_loss = model.att_prior_loss(
-        true_vals, input_grads, att_prior_pos_limit, att_prior_pos_weight
+        status, input_grads, att_prior_pos_limit, att_prior_pos_weight
     )
     final_loss = corr_loss + (att_prior_loss_weight * att_prior_loss)
     return final_loss, (corr_loss, att_prior_loss)
@@ -184,36 +186,34 @@ def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
 
     batch_losses, corr_losses, att_losses = [], [], []
     for input_seqs, output_vals in t_iter:
-        input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
-        output_vals = util.place_tensor(torch.tensor(output_vals)).float()
+        batch_size = output_vals.shape[0]
+        input_seqs_t = util.place_tensor(torch.tensor(input_seqs)).float()
+        output_vals_t = util.place_tensor(torch.tensor(output_vals)).float()
         
         # Make channels come first in input
-        input_seqs = torch.transpose(input_seqs, 1, 2)
+        input_seqs_t = torch.transpose(input_seqs_t, 1, 2)
 
         if att_prior_loss_weight > 0:
-            input_seqs.requires_grad = True  # Set gradient required
-            probs = model(input_seqs)
-            input_grads = []
-            for i in range(probs.size(1)):
-                model.zero_grad()  # Clear gradients
-                mask = torch.zeros(probs.size())
-                mask[:, i] = 1  # Only consider gradients for one task
-                probs.backward(
-                    util.place_tensor(mask),
-                    retain_graph=True
-                )
-                grad = torch.unsqueeze(input_seqs.grad, dim=1)  # B x 1 x D x L
-                input_grads.append(grad)
-            input_grads = torch.cat(input_grads, dim=1)  # B x C x D x L
-            input_grads = input_grads.transpose(2, 3)  # B x C x L x D
-            input_seqs.requires_grad = False  # Reset gradient required
+            input_seqs_t.requires_grad = True  # Set gradient required
+            probs = model(input_seqs_t)
+            model.zero_grad()  # Clear gradients
+            probs.backward(
+                util.place_tensor(torch.ones(probs.size())),
+                retain_graph=True
+            )  # Sum gradients across tasks
+            input_grads = input_seqs_t.grad * input_seqs_t  # Gradient * input
+            input_grads = input_grads.transpose(1, 2)  # B x I x D
+            status = -np.ones(batch_size)
+            status[np.any(output_vals == 1, axis=1)] = 1
+            status[np.all(output_vals == 0, axis=1)] = 0
+            input_seqs_t.requires_grad = False  # Reset gradient required
         else:
-            probs = model(input_seqs)
-            input_grads = None
+            probs = model(input_seqs_t)
+            status, input_grads = None, None
 
         optimizer.zero_grad()  # Clear gradients from last batch
         loss, (corr_loss, att_loss) = model_loss(
-            model, output_vals, probs, input_grads
+            model, output_vals_t, probs, status, input_grads
         )
         loss.backward()  # Compute gradient
         optimizer.step()  # Update weights through backprop
@@ -249,43 +249,41 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
     batch_losses, corr_losses, att_losses = [], [], []
     pred_val_arr, true_val_arr = [], []
     for input_seqs, output_vals in t_iter:
+        batch_size = output_vals.shape[0]
         true_val_arr.append(output_vals)
 
-        input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
-        output_vals = util.place_tensor(torch.tensor(output_vals)).float()
+        input_seqs_t = util.place_tensor(torch.tensor(input_seqs)).float()
+        output_vals_t = util.place_tensor(torch.tensor(output_vals)).float()
 
         # Make channels come first in input
-        input_seqs = torch.transpose(input_seqs, 1, 2)
+        input_seqs_t = torch.transpose(input_seqs_t, 1, 2)
 
         if att_prior_loss_weight > 0:
             torch.set_grad_enabled(True)  # We actually do need grad here
-            input_seqs.requires_grad = True  # Set gradient required
-            probs = model(input_seqs)
+            input_seqs_t.requires_grad = True  # Set gradient required
+            probs = model(input_seqs_t)
             pred_val_arr.append(probs.detach().to("cpu").numpy())
-            input_grads = []
-            for i in range(probs.size(1)):
-                model.zero_grad()  # Clear gradients
-                mask = torch.zeros(probs.size())
-                mask[:, i] = 1  # Only consider gradients for one task
-                probs.backward(
-                    util.place_tensor(mask),
-                    retain_graph=True
-                )
-                grad = torch.unsqueeze(input_seqs.grad, dim=1)  # B x 1 x D x L
-                input_grads.append(grad)
-            input_grads = torch.cat(input_grads, dim=1)  # B x C x D x L
-            input_grads = input_grads.transpose(2, 3)  # B x C x L x D
-            input_seqs.requires_grad = False  # Reset gradient required
+            model.zero_grad()  # Clear gradients
+            probs.backward(
+                util.place_tensor(torch.ones(probs.size())),
+                retain_graph=True
+            )  # Sum gradients across tasks
+            input_grads = input_seqs_t.grad * input_seqs_t  # Gradient * input
+            input_grads = input_grads.transpose(1, 2)  # B x I x D
+            status = -np.ones(batch_size)
+            status[np.any(output_vals == 1, axis=1)] = 1
+            status[np.all(output_vals == 0, axis=1)] = 0
+            input_seqs_t.requires_grad = False  # Reset gradient required
             torch.set_grad_enabled(False)  # Don't need grad to compute loss
         else:
             torch.set_grad_enabled(False)
             model.zero_grad()  # Clear gradients from last batch
-            probs = model(input_seqs)
+            probs = model(input_seqs_t)
             pred_val_arr.append(probs.detach().to("cpu").numpy())
-            input_grads = None
+            status, input_grads = None, None
 
         loss, (corr_loss, att_loss) = model_loss(
-            model, output_vals, probs, input_grads
+            model, output_vals_t, probs, status, input_grads
         )
 
         batch_losses.append(loss.item())
@@ -408,8 +406,6 @@ def run_training(train_bed_path, val_bed_path):
 
 @train_ex.automain
 def main():
-    train_bedfile = "/users/amtseng/tfmodisco/data/processed/DREAM/tests/SPI1_test_2000.tsv.gz"
+    train_bedfile = "/users/amtseng/att_priors/data/interim/ENCODE/binary/tests/SPI1_test_2000.bed.gz"
     val_bedfile = train_bedfile
-    # train_bedfile = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/labels/SPI1.train.labels.tsv.gz"
-    # val_bedfile = "/users/amtseng/tfmodisco/data/raw/DREAM/ChIPseq/heldout_chr/training_celltypes/labels/SPI1.train.labels.tsv.gz"
     run_training(train_bedfile, val_bedfile)

@@ -13,7 +13,7 @@ def config():
     states_map = {"U": 0, "B": 1, "A": -1}
 
     # Whether we need to convert states to numbers
-    convert_states = True
+    convert_states = False
 
     # When computing model output metrics, ignore outputs of this value
     output_ignore_value = states_map["A"]

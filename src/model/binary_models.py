@@ -54,6 +54,9 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         self.num_fc_layers = num_fc_layers
         self.batch_norm = batch_norm
 
+        # ReLU activation for the convolutional layers and attribution prior
+        self.relu = torch.nn.ReLU()
+
         # Define the convolutional layers
         depths = [input_depth] + conv_depths
         self.conv_layers = torch.nn.ModuleList()
@@ -67,7 +70,7 @@ class BinaryTFBindingPredictor(torch.nn.Module):
                     padding=0  # No padding (AKA "valid")
                 )
             )
-            self.conv_layers.append(torch.nn.ReLU())
+            self.conv_layers.append(self.relu)
             if batch_norm:
                 self.conv_layers.append(
                     torch.nn.BatchNorm1d(depths[i + 1])
@@ -108,7 +111,7 @@ class BinaryTFBindingPredictor(torch.nn.Module):
             self.fc_layers.append(
                 torch.nn.Linear(dims[i], dims[i + 1])
             )
-            self.fc_layers.append(torch.nn.ReLU())
+            self.fc_layers.append(self.relu)
             if batch_norm:
                 self.fc_layers.append(
                     torch.nn.BatchNorm1d(dims[i + 1])
@@ -203,37 +206,38 @@ class BinaryTFBindingPredictor(torch.nn.Module):
             return self.bce_loss(probs_flat, true_vals_flat)
 
 
-    def att_prior_loss(self, true_vals, input_grads, pos_limit, pos_weight):
+    def att_prior_loss(self, status, input_grads, pos_limit, pos_weight):
         """
         Computes an attribution prior loss for some given training examples.
         Arguments:
-            `true_vals`: a B x C tensor, where B is the batch size and C is the
-                number of output tasks, containing the true binary values
-            `input_grads`: a B x C x L x D tensor, where B is the batch size, C
-                is the number of output tasks, L is the length of the input, and
-                D is the dimensionality of each input base; this needs to be the
-                gradients of the input with respect to each output task
+            `status`: a B-tensor, where B is the batch size; each entry is 1 if
+                that example is to be treated as a positive example, and 0
+                otherwise
+            `input_grads`: a B x L x D tensor, where B is the batch size, L is
+                the length of the input, and D is the dimensionality of each
+                input base; this needs to be the gradients of the input with
+                respect to the output (for multiple tasks, this gradient needs
+                to be aggregated); this should be *gradient times input*
             `pos_limit`: the maximum integer frequency index, k, to consider for
                 the positive loss; this corresponds to a frequency cut-off of
                 pi * k / L; k should be less than L / 2
             `pos_weight`: the amount to weight the positive loss by, to give it
                 a similar scale as the negative loss
-        Returns a single scalar Tensor consisting of the positive and negative
-        losses together.
+        Returns a single scalar Tensor consisting of the attribution loss for
+        the batch.
         """
-        relu = torch.nn.ReLU()
-        max_rect_grads = torch.max(relu(input_grads), dim=3)[0]
+        max_rect_grads = torch.max(self.relu(input_grads), dim=2)[0]
 
-        neg_grads = max_rect_grads[true_vals == 0]
-        pos_grads = max_rect_grads[true_vals == 1]
+        neg_grads = max_rect_grads[status == 0]
+        pos_grads = max_rect_grads[status == 1]
 
         # Loss for positives
         if pos_grads.nelement():
-            pos_grads_comp = torch.stack(
+            pos_grads_complex = torch.stack(
                 [pos_grads, place_tensor(torch.zeros(pos_grads.size()))], dim=2
-            )
+            )  # Convert to complex number format: a -> a + 0i
             # Magnitude of the Fourier coefficients, normalized:
-            pos_fft = torch.fft(pos_grads_comp, 1)
+            pos_fft = torch.fft(pos_grads_complex, 1)
             pos_mags = torch.norm(pos_fft, dim=2)
             pos_mags = pos_mags / torch.sum(pos_mags, dim=1, keepdim=True)
             # Cut off DC and high-frequency components:
