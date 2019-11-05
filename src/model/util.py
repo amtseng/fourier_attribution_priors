@@ -3,18 +3,6 @@ import logging
 import sys
 import sacred
 
-def make_logger(name):
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter(
-        "%(asctime)s %(levelname)s %(process)d: %(message)s"
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    return logger
-
-
 def place_tensor(tensor):
     """
     Places a tensor on GPU, if PyTorch sees CUDA; otherwise, the returned tensor

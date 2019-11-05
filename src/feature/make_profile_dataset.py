@@ -377,14 +377,14 @@ def main():
     import os
     import tqdm
 
-    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/profile/OLD"
+    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/profile/"
 
     peaks_bed_files = [
         os.path.join(base_path, ending) for ending in [
-            "SPI1/SPI1_ENCSR000BGQ_GM12878_holdout_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BGW_K562_holdout_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BIJ_GM12891_holdout_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BUW_HL-60_holdout_peakints.bed.gz"
+            "SPI1/SPI1_ENCSR000BGQ_GM12878_peakints.bed.gz",
+            "SPI1/SPI1_ENCSR000BGW_K562_peakints.bed.gz",
+            "SPI1/SPI1_ENCSR000BIJ_GM12891_peakints.bed.gz",
+            "SPI1/SPI1_ENCSR000BUW_HL-60_peakints.bed.gz"
         ]
     ]
             
@@ -418,31 +418,29 @@ def main():
     start_time = datetime.now()
     for batch in tqdm.tqdm(loader, total=len(loader.dataset)):
         data = batch
-        break
     end_time = datetime.now()
     print("Time: %ds" % (end_time - start_time).seconds)
 
-    k = 2
-    rc_k = int(len(data[0]) / 2) + k
+    # k = 2
+    # rc_k = int(len(data[0]) / 2) + k
 
-    seqs, profiles, statuses = data
-    
-    seq, prof, status = seqs[k], profiles[k], statuses[k]
-    rc_seq, rc_prof, rc_status = seqs[rc_k], profiles[rc_k], statuses[rc_k]
-    
-    print(util.one_hot_to_seq(seq))
-    print(util.one_hot_to_seq(rc_seq))
+    # seqs, profiles, statuses = data
+    # 
+    # seq, prof, status = seqs[k], profiles[k], statuses[k]
+    # rc_seq, rc_prof, rc_status = seqs[rc_k], profiles[rc_k], statuses[rc_k]
+    # 
+    # print(util.one_hot_to_seq(seq))
+    # print(util.one_hot_to_seq(rc_seq))
 
-    print(status, rc_status)
+    # print(status, rc_status)
 
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(2, 1)
-    task_ind = 3
-    ax[0].plot(prof[task_ind][0])
-    ax[0].plot(prof[task_ind][1])
+    # import matplotlib.pyplot as plt
+    # fig, ax = plt.subplots(2, 1)
+    # task_ind = 3
+    # ax[0].plot(prof[task_ind][0])
+    # ax[0].plot(prof[task_ind][1])
 
-    ax[1].plot(rc_prof[task_ind][0])
-    ax[1].plot(rc_prof[task_ind][1])
+    # ax[1].plot(rc_prof[task_ind][0])
+    # ax[1].plot(rc_prof[task_ind][1])
 
-    plt.show()
-    
+    # plt.show()

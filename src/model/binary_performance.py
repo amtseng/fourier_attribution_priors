@@ -151,42 +151,36 @@ def compute_evaluation_metrics(true_values, pred_values, val_neg_downsample):
     return dict(zip(labels, metrics))
 
 
-def log_evaluation_metrics(metric_dict, logger, _run):
+def log_evaluation_metrics(metric_dict, _run, print_log=True):
     """
-    Given the result of `compute_evaluation_metrics`, logs them all to both
-    the given logger and the given Sacred observer.
+    Given the metrics dictionary returned by `compute_performance`, logs them
+    to a Sacred logging object (`_run`), and optionally prints out a log.
     """
-    logger.info("Validation accuracies: " + ", ".join(
+    print("\tAccuracy: " + ", ".join(
         [("%6.2f%%" % (acc * 100)) for acc in metric_dict["acc"]]
     ))
-    logger.info("Validation POS accuracies: " + ", ".join(
+    print("\tPOS accuracy: " + ", ".join(
         [("%6.2f%%" % (acc * 100)) for acc in metric_dict["pos_acc"]]
     ))
-    logger.info("Validation NEG accuracies: " + ", ".join(
+    print("\tNEG accuracy: " + ", ".join(
         [("%6.2f%%" % (acc * 100)) for acc in metric_dict["neg_acc"]]
     ))
-    logger.info("Validation auROCs: " + ", ".join(
+    print("\tauROC: " + ", ".join(
         [("%6.10f" % auroc) for auroc in metric_dict["auroc"]]
     ))
-    logger.info("Validation precisions: " + ", ".join(
+    print("\tPrecision: " + ", ".join(
         [("%6.10f" % preci) for preci in metric_dict["pre"]]
     ))
-    logger.info("Validation recalls: " + ", ".join(
+    print("\tRecall: " + ", ".join(
         [("%6.10f" % recall) for recall in metric_dict["rec"]]
     ))
-    logger.info("Validation average precisions: " + ", ".join(
-        [("%6.10f" % preci) for preci in metric_dict["ap"]]
-    ))
-    logger.info("Validation auPRCs: " + ", ".join(
+    print("\tauPRC: " + ", ".join(
         [("%6.10f" % auprc) for auprc in metric_dict["auprc"]]
     ))
-    logger.info("Validation precisions (corrected): " + ", ".join(
+    print("\tCorrected precision: " + ", ".join(
         [("%6.10f" % preci) for preci in metric_dict["c_pre"]]
     ))
-    logger.info("Validation average precisions (corrected): " + ", ".join(
-        [("%6.10f" % preci) for preci in metric_dict["c_ap"]]
-    ))
-    logger.info("Validation auPRCs (corrected): " + ", ".join(
+    print("\tCorrected auPRC: " + ", ".join(
         [("%6.10f" % auprc) for auprc in metric_dict["c_auprc"]]
     ))
 
@@ -196,8 +190,6 @@ def log_evaluation_metrics(metric_dict, logger, _run):
     _run.log_scalar("val_auroc", metric_dict["auroc"])
     _run.log_scalar("val_precis", metric_dict["pre"])
     _run.log_scalar("val_recall", metric_dict["rec"])
-    _run.log_scalar("val_avg_precis", metric_dict["ap"])
     _run.log_scalar("val_auprc", metric_dict["auprc"])
     _run.log_scalar("val_corr_precis", metric_dict["c_pre"])
-    _run.log_scalar("val_corr_avg_precis", metric_dict["c_ap"])
     _run.log_scalar("val_corr_auprc", metric_dict["c_auprc"])

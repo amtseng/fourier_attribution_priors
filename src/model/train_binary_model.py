@@ -6,7 +6,7 @@ import tqdm
 import os
 import model.util as util
 import model.binary_models as binary_models
-import model.performance as performance
+import model.binary_performance as binary_performance
 import feature.make_binary_dataset as make_binary_dataset
 
 MODEL_DIR = os.environ.get(
@@ -20,8 +20,6 @@ train_ex = sacred.Experiment("train", ingredients=[
 train_ex.observers.append(
     sacred.observers.FileStorageObserver.create(MODEL_DIR)
 )
-logger = util.make_logger("train_logger")
-train_ex.logger = logger
 
 @train_ex.config
 def config(dataset):
@@ -363,13 +361,7 @@ def train(
         _run.log_scalar("val_batch_losses", v_batch_losses)
         _run.log_scalar("val_corr_losses", v_corr_losses)
         _run.log_scalar("val_att_losses", v_att_losses)
-
-        # Compute evaluation metrics and log them
-        metrics = performance.compute_evaluation_metrics(
-            true_vals, pred_vals, val_neg_downsample
-        )
-        performance.log_evaluation_metrics(metrics, logger, _run)
-
+ 
         # Save trained model for the epoch
         savepath = os.path.join(
             output_dir, "model_ckpt_epoch_%d.pt" % (epoch + 1)
@@ -392,6 +384,14 @@ def train(
                 best_delta = np.max(np.diff(val_epoch_loss_hist))
                 if best_delta < early_stop_min_delta:
                     break  # Not improving enough
+
+    # Compute evaluation metrics and log them
+    print("Computing final validation metrics:")
+    metrics = binary_performance.compute_evaluation_metrics(
+        true_vals, pred_vals, val_neg_downsample
+    )
+    binary_performance.log_evaluation_metrics(metrics, _run)
+
 
 
 @train_ex.command
