@@ -6,7 +6,7 @@ import tqdm
 import os
 import model.util as util
 import model.profile_models as profile_models
-import model.performance as performance
+import model.profile_performance as profile_performance
 import feature.make_profile_dataset as make_profile_dataset
 
 MODEL_DIR = os.environ.get(
@@ -16,6 +16,7 @@ MODEL_DIR = os.environ.get(
 
 train_ex = sacred.Experiment("train", ingredients=[
     make_profile_dataset.dataset_ex
+    profile_performance.performance_ex
 ])
 train_ex.observers.append(
     sacred.observers.FileStorageObserver.create(MODEL_DIR)
@@ -381,10 +382,10 @@ def train(
 
 @train_ex.command
 def run_training(train_peak_beds, val_peak_beds, prof_bigwigs):
-    train_loader = make_profile_dataset.data_loader_from_beds_and_bigwigs(
+    train_loader = make_profile_dataset.create_data_loader(
         train_peak_beds, prof_bigwigs
     )
-    val_loader = make_profile_dataset.data_loader_from_beds_and_bigwigs(
+    val_loader = make_profile_dataset.create_data_loader(
         val_peak_beds, prof_bigwigs
     )
     train(train_loader, val_loader)

@@ -51,3 +51,4 @@ def main(input_hdf5, output_bed, gzip_flag):
 
 if __name__ == "__main__":
     main()
+

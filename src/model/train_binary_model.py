@@ -397,9 +397,9 @@ def train(
 @train_ex.command
 def run_training(train_bed_path, val_bed_path):
     print("Importing training data")
-    train_loader = make_binary_dataset.data_loader_from_bedfile(train_bed_path)
+    train_loader = make_binary_dataset.create_data_loader(train_bed_path)
     print("Importing validation data")
-    val_loader = make_binary_dataset.data_loader_from_bedfile(val_bed_path)
+    val_loader = make_binary_dataset.create_data_loader(val_bed_path)
     print("Training")
     train(train_loader, val_loader)
 

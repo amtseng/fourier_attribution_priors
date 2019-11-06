@@ -2,6 +2,7 @@ import torch
 import math
 import numpy as np
 from model.util import sanitize_sacred_arguments, convolution_size, place_tensor
+import scipy.special
 
 def multinomial_log_probs(category_log_probs, trials, query_counts):
     """
@@ -284,14 +285,8 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         # Compute the log probabilities based on multinomial distributions,
         # each one is based on predicted probabilities, one for each track
 
-        # Convert logits to probabilities by putting through sigmoid
-        # log_pred_profs = torch.nn.functional.log_softmax(
-        #     logit_pred_profs, dim=2
-        # )
-        sig_pred_profs = self.sigmoid(logit_pred_profs)
-        sig_sums = torch.sum(sig_pred_profs, dim=-1).unsqueeze(-1)
-        norm_sig_pred_profs = torch.div(sig_pred_profs, sig_sums)
-        log_pred_profs = torch.log(norm_sig_pred_profs)  # Log probs
+        # Convert logits to log probabilities
+        log_pred_profs = profile_logits_to_log_probs(logit_pred_profs)
 
         # Compute probability of seeing true profile under distribution of log
         # predicted probs
@@ -307,7 +302,7 @@ class ProfileTFBindingPredictor(torch.nn.Module):
 
         mse = self.mse_loss(log_pred_counts, log_true_counts)
         batch_count_loss = torch.mean(mse, dim=1)  # Average acorss tasks
-        count_loss = torch.mean(batch_count_loss)  # average across batch
+        count_loss = torch.mean(batch_count_loss)  # Average across batch
 
         return prof_loss + (count_loss_weight * count_loss)
 
@@ -360,3 +355,24 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             neg_loss_mean = 0
 
         return (pos_weight * pos_loss_mean) + neg_loss_mean
+
+
+def profile_logits_to_log_probs(logit_pred_profs):
+    """
+    Converts the model's predicted profile logits into normalized probabilities
+    via a softmax.
+    Arguments:
+        `logit_pred_profs`: a B x T x O x 2 tensor/array containing the
+            predicted profile logits
+    Returns a B x T x O x 2 tensor/array containing the predicted profiles as
+    log probabilities. If the input is a tensor, the output will be a tensor. If
+    the input is a NumPy array, the output will be a NumPy array. Note that the
+    reason why this function returns log probabilities rather than raw
+    probabilities is for numerical stability.
+    """
+    if type(logit_pred_profs) is np.ndarray:
+        return logit_pred_profs - \
+            scipy.special.logsumexp(logit_pred_profs, axis=2, keepdims=True)
+    else:
+        return logit_pred_profs - \
+            torch.logsumexp(logit_pred_profs, dim=2, keepdim=True)

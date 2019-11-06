@@ -275,7 +275,7 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
 
 @dataset_ex.capture
-def data_loader_from_bedfile(
+def create_data_loader(
     bedfile_path, batch_size, reference_fasta, input_length,
     positive_stride, negative_stride, num_workers, convert_states, revcomp,
     dataset_seed, hastitle=True, shuffle=True, return_coords=False
@@ -372,7 +372,7 @@ def main():
 
     print(tfname)
 
-    loader = data_loader_from_bedfile(
+    loader = create_data_loader(
         bedfile, convert_states=False,
         reference_fasta = "/users/amtseng/genomes/hg38.fasta"
     )
