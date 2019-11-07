@@ -37,6 +37,9 @@ def config():
     # Sample X negatives randomly from the genome for every positive example
     negative_ratio = 1
 
+    # Use this stride when tiling coordinates across a peak
+    peak_tiling_stride = 20
+
     # Number of workers for the data loader
     num_workers = 10
 
@@ -136,7 +139,7 @@ class CoordsToVals:
         return self._get_ndarray(coords)
 
 
-class CoordsBatcher(torch.utils.data.sampler.Sampler):
+class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
     """
     Creates a batch producer that batches positive coordinates and samples
     negative coordinates. Each batch will have some positives and negatives
@@ -170,7 +173,7 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
         # 7th column is the identifier of the source BED
         # Cols 1-3 should be the coordinate, 4-5 are the original peak location,
         # and col 6 is the summit location
-        pos_coords = []
+        sample_coords = []
         for i, pos_coords_bed in enumerate(pos_coords_beds):
             pos_coords_table = pd.read_csv(
                 pos_coords_bed, sep="\t", header=None, compression="gzip"
@@ -179,11 +182,11 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
             coords = np.concatenate(
                 [coords, np.tile(i + 1, (len(coords), 1))], axis=1
             )
-            pos_coords.append(coords)
-        self.pos_coords = np.concatenate(pos_coords)
+            sample_coords.append(coords)
+        self.sample_coords = np.concatenate(sample_coords)
 
         # Number of positives and negatives per batch
-        self.num_pos = len(self.pos_coords)
+        self.num_coords = len(self.sample_coords)
         self.neg_per_batch = int(batch_size * neg_ratio / (neg_ratio + 1))
         self.pos_per_batch = batch_size - self.neg_per_batch
 
@@ -205,7 +208,7 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
         (respectively); for negative samples drawn from the GenomeSampler, these
         values are all -1.
         """
-        pos_coords = self.pos_coords[
+        pos_coords = self.sample_coords[
             index * self.pos_per_batch : (index + 1) * self.pos_per_batch
         ]
 
@@ -216,8 +219,13 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
             )
             pos_coords[:,1] += jitter_vals
             pos_coords[:,2] += jitter_vals
-
-        neg_coords = self.genome_sampler.sample_intervals(self.neg_per_batch)
+        
+        if self.neg_per_batch:
+            neg_coords = self.genome_sampler.sample_intervals(
+                self.neg_per_batch
+            )
+        else:
+            neg_coords = np.empty(shape=(0, 3), dtype=object)
         coords = np.concatenate([pos_coords[:,:3], neg_coords])  # Cols 1-3
 
         status = np.concatenate(
@@ -233,11 +241,117 @@ class CoordsBatcher(torch.utils.data.sampler.Sampler):
             return coords, status
 
     def __len__(self):
-        return int(np.ceil(self.num_pos / float(self.pos_per_batch)))
+        return int(np.ceil(self.num_coords / float(self.pos_per_batch)))
    
     def on_epoch_start(self):
         if self.shuffle_before_epoch:
-            self.pos_coords = self.rng.permutation(self.pos_coords)
+            self.sample_coords = self.rng.permutation(self.sample_coords)
+
+
+class SummitCenteringCoordsBatcher(SamplingCoordsBatcher):
+    """
+    Creates a batch producer that batches positive coordinates only, each one
+    centered at a summit.
+    Arguments:
+        `pos_coords_beds`: list of paths to gzipped BED files containing the
+            sets of positive coordinates for various tasks
+        `batch_size`: number of samples per batch
+        `return_peaks`: if True, returns the peaks and summits sampled from the
+            peak set as a B x 3 array
+        `shuffle_before_epoch`: Whether or not to shuffle all examples before
+            each epoch
+    """
+    def __init__(
+        self, pos_coords_beds, batch_size, return_peaks=False,
+        shuffle_before_epoch=False, seed=None
+    ):
+        # Same as a normal SamplingCoordsBatcher, but with no negatives and no
+        # jitter, since the coordinates in the positive coordinate BEDs are
+        # already centered at the summits
+        super().__init__(
+            pos_coords_beds=pos_coords_beds,
+            batch_size=batch_size,
+            neg_ratio=0,
+            jitter=0,
+            genome_sampler=None,
+            return_peaks=return_peaks,
+            shuffle_before_epoch=shuffle_before_epoch,
+            seed=seed
+        )
+
+        
+class PeakTilingCoordsBatcher(SamplingCoordsBatcher):
+    """
+    Creates a batch producer that batches positive coordinates only, where the
+    coordinates are tiled such that all coordinate centers overlap with a peak.
+    Arguments:
+        `pos_coords_beds`: list of paths to gzipped BED files containing the
+            sets of positive coordinates for various tasks
+        `stride`: amount of stride when tiling the coordinates
+        `batch_size`: number of samples per batch
+        `return_peaks`: if True, returns the peaks and summits sampled from the
+            peak set as a B x 3 array
+        `shuffle_before_epoch`: Whether or not to shuffle all examples before
+            each epoch
+    """
+    def __init__(
+        self, pos_coords_beds, stride, batch_size, return_peaks=False,
+        shuffle_before_epoch=False, seed=None
+    ):
+        self.stride = stride
+        self.batch_size = batch_size
+        self.jitter = 0
+        self.return_peaks = return_peaks
+        self.shuffle_before_epoch = shuffle_before_epoch
+
+        # Read in the positive coordinates and make N x 4 array, containing only
+        # cols 1, 4-6, which are the original peak chromosome, start/end, and
+        # summit location, as well as a status indicating the original BED file
+        peak_coords = []
+        for i, pos_coords_bed in enumerate(pos_coords_beds):
+            pos_coords_table = pd.read_csv(
+                pos_coords_bed, sep="\t", header=None, compression="gzip",
+                usecols=[0, 3, 4, 5]
+            )
+            coords = pos_coords_table.values.astype(object)
+            coords = np.concatenate(
+                [coords, np.tile(i + 1, (len(coords), 1))], axis=1
+            )
+            peak_coords.append(coords)
+        all_peak_coords = np.concatenate(peak_coords)
+
+        # For each peak, tile a set of coordinate centers across the peak and
+        # make an N x 7 array
+        def tile_peak(peak_coord_row):
+            # Creates M x 7 array from a single length-4 row of all_peak_coords
+            # Result is chromosome (col 1), tiled coordinates (cols 2-3) where
+            # each coordinate is length 1, peak coordinates (cols 4-5), summit
+            # location (col 6), and status (col 7)
+            peak_start, peak_end = peak_coord_row[1], peak_coord_row[2]
+            coord_starts = np.expand_dims(
+                np.arange(peak_start, peak_end, stride), axis=1
+            )
+            coord_ends = coord_starts + 1
+            num_coords = len(coord_starts)
+            row_expand = np.tile(peak_coord_row, (num_coords, 1))
+            return np.concatenate([
+                row_expand[:, :1],
+                coord_starts,
+                coord_ends,
+                row_expand[:, 1:]
+            ], axis=1)
+
+        self.sample_coords = np.concatenate(
+            [tile_peak(row) for row in all_peak_coords], axis=0
+        )
+
+        # Number of positives and negatives per batch
+        self.num_coords = len(self.sample_coords)
+        self.neg_per_batch = 0
+        self.pos_per_batch = self.batch_size
+
+        if shuffle_before_epoch:
+            self.rng = np.random.RandomState(seed)
 
 
 class CoordDataset(torch.utils.data.IterableDataset):
@@ -272,8 +386,8 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
     def get_batch(self, index):
         """
-        Returns a batch, which consists of an N x L x 4 NumPy array of 1-hot
-        encoded sequence, an N x T x 2 x L NumPy array of profiles, and a 1D
+        Returns a batch, which consists of an B x L x 4 NumPy array of 1-hot
+        encoded sequence, an B x T x 2 x L NumPy array of profiles, and a 1D
         length-N NumPy array of statuses. The profile for each of the T tasks in
         `coords_to_vals_list` is returned, in the same order as in this list,
         and each task contains 2 tracks, for the plus and minus strand,
@@ -344,18 +458,35 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
 @dataset_ex.capture
 def create_data_loader(
-    peaks_bed_paths, profile_bigwig_paths, batch_size, reference_fasta,
-    chrom_sizes, input_length, profile_length, negative_ratio, num_workers,
-    revcomp, jitter_size, dataset_seed, shuffle=True, return_coords=False
+    peaks_bed_paths, profile_bigwig_paths, sampling_type, batch_size,
+    reference_fasta, chrom_sizes, input_length, profile_length, negative_ratio,
+    peak_tiling_stride, num_workers, revcomp, jitter_size, dataset_seed,
+    shuffle=True, return_coords=False
 ):
     """
-    From a list of paths to gzipped BED files containing coordinates of positive
-    peaks, and a list of paths to BigWigs containing reads mapped to each
-    location in the genome, returns an IterableDataset object. Each entry in
-    `profile_bigwig_paths` needs to be a pair of BigWig paths, corresponding to
-    the profile of the plus and minus strand, respectively. If `shuffle` is
-    True, shuffle the dataset before each epoch.
+    Creates an IterableDataset object, which iterates through batches of
+    coordinates and returns profiles for the coordinates.
+    Arguments:
+        `peaks_bed_paths`: a list of paths to gzipped 6-column BED files
+            containing coordinates of positive-binding coordinates
+        `profile_bigwig_paths`: a list of paths to BigWigs containing reads
+            mapped to each location in the genome; each entry must be a pair of
+            BigWig paths, corresponding to the profile of the plus and minus
+            strand, respectively
+        `sampling_type`: one of ("SamplingCoordsBatcher",
+            "SummitCenteringCoordsBatcher", or "PeakTilingCoordsBatcher"), which
+            corresponds to sampling positive and negative regions, taking only
+            positive regions centered around summits, and taking only positive
+            regions tiled across peaks
+        `shuffle`: if specified, shuffle the coordinates before each epoch
+        `return_coords`: if specified, also return the underlying coordinates
+            and peak data along with the profiles in each batch
     """
+    assert sampling_type in (
+            "SamplingCoordsBatcher", "SummitCenteringCoordsBatcher",
+            "PeakTilingCoordsBatcher"
+    )
+
     # Maps set of coordinates to profiles
     coords_to_vals_list = [
         (
@@ -364,17 +495,30 @@ def create_data_loader(
         ) for path_1, path_2 in profile_bigwig_paths
     ]
 
-    # Randomly samples from genome
-    genome_sampler = GenomeIntervalSampler(
-        chrom_sizes, input_length, seed=dataset_seed
-    )
-    
-    # Coordinate batcher, yielding batches of positive and negative coordinates
-    coords_batcher = CoordsBatcher(
-        peaks_bed_paths, batch_size, negative_ratio, jitter_size,
-        genome_sampler, return_peaks=return_coords,
-        shuffle_before_epoch=shuffle, seed=dataset_seed
-    )
+    if sampling_type == "SamplingCoordsBatcher":
+        # Randomly samples from genome
+        genome_sampler = GenomeIntervalSampler(
+            chrom_sizes, input_length, seed=dataset_seed
+        )
+        # Yields batches of positive and negative coordinates
+        coords_batcher = SamplingCoordsBatcher(
+            peaks_bed_paths, batch_size, negative_ratio, jitter_size,
+            genome_sampler, return_peaks=return_coords,
+            shuffle_before_epoch=shuffle, seed=dataset_seed
+        )
+    elif sampling_type == "SummitCenteringCoordsBatcher":
+        # Yields batches of positive coordinates, centered at summits
+        coords_batcher = SummitCenteringCoordsBatcher(
+            peaks_bed_paths, batch_size, return_peaks=return_coords,
+            shuffle_before_epoch=shuffle, seed=dataset_seed
+        )
+    else:
+        # Yields batches of positive coordinates, tiled across peaks
+        coords_batcher = PeakTilingCoordsBatcher(
+            peaks_bed_paths, peak_tiling_stride, batch_size,
+            return_peaks=return_coords, shuffle_before_epoch=shuffle,
+            seed=dataset_seed
+        )
 
     # Maps set of coordinates to 1-hot encoding, padded
     coords_to_seq = util.CoordsToSeq(
@@ -438,7 +582,8 @@ def main():
     ]
 
     loader = create_data_loader(
-        peaks_bed_files, profile_bigwig_files, return_coords=True
+        peaks_bed_files, profile_bigwig_files, "PeakTilingCoordsBatcher",
+        return_coords=True
     )
     loader.dataset.on_epoch_start()
     start_time = datetime.now()
