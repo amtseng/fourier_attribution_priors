@@ -15,14 +15,12 @@ MODEL_DIR = os.environ.get(
 )
 
 train_ex = sacred.Experiment("train", ingredients=[
-    make_profile_dataset.dataset_ex
+    make_profile_dataset.dataset_ex,
     profile_performance.performance_ex
 ])
 train_ex.observers.append(
     sacred.observers.FileStorageObserver.create(MODEL_DIR)
 )
-logger = util.make_logger("train_logger")
-train_ex.logger = logger
 
 @train_ex.config
 def config(dataset):
@@ -64,7 +62,7 @@ def config(dataset):
     att_prior_pos_weight = 1.0
 
     # Number of training epochs
-    num_epochs = 10
+    num_epochs = 1
 
     # Learning rate
     learning_rate = 0.004
@@ -162,28 +160,52 @@ def model_loss(
 
 
 @train_ex.capture
-def train_epoch(
-    train_loader, model, optimizer, num_tasks, att_prior_loss_weight
+def run_epoch(
+    data_loader, mode, model, num_tasks, att_prior_loss_weight, optimizer=None,
+    return_data=False
 ):
     """
-    Runs the data from the training loader once through the model, and performs
-    backpropagation. Returns a list of losses for the batches, a list of
-    correction losses specifically for the batches, and a list of attribution
-    prior losses specifically for the batches. If the attribution prior loss is
-    not computed, then the list will have all 0s. Note that the data loader is
-    expected to return profiles where the first half of the tasks are prediction
-    profiles, and the second half are control profiles.
+    Runs the data from the data loader once through the model, to train,
+    validate, or predict.
+    Arguments:
+        `data_loader`: an instantiated `DataLoader` instance that gives batches
+            of data; each batch must yield the input sequences, profiles, and
+            statuses; profiles must be such that the first half are prediction
+            (target) profiles, and the second half are control profiles
+        `mode`: one of "train", "eval"; if "train", run the epoch and perform
+            backpropagation; if "eval", only do evaluation
+        `model`: the current PyTorch model being trained/evaluated
+        `optimizer`: an instantiated PyTorch optimizer, for training mode
+        `return_data`: if specified, returns the following as NumPy arrays:
+            true profile counts, predicted profile log probabilities,
+            true total counts, predicted log counts
+    Returns a list of losses for the batches, a list of correction losses
+    specifically for the batches, and a list of attribution prior losses
+    specifically for the batches. If the attribution prior loss is not computed,
+    then the list will have all 0s. If `return_data` is True, then more things
+    will be returned after these.
     """
-    train_loader.dataset.on_epoch_start()  # Set-up the epoch
-    num_batches = len(train_loader.dataset)
+    assert mode in ("train", "eval")
+    if mode == "train":
+        assert optimizer is not None
+    else:
+        assert optimizer is None 
+
+    data_loader.dataset.on_epoch_start()  # Set-up the epoch
+    num_batches = len(data_loader.dataset)
     t_iter = tqdm.tqdm(
-        train_loader, total=num_batches, desc="\tTraining loss: ---"
+        data_loader, total=num_batches, desc="\tLoss: ---"
     )
 
-    model.train()  # Switch to training mode
-    torch.set_grad_enabled(True)
+    if mode == "train":
+        model.train()  # Switch to training mode
+        torch.set_grad_enabled(True)
 
     batch_losses, corr_losses, att_losses = [], [], []
+    if return_data:
+        all_logit_pred_profs, all_log_pred_counts = [], []
+        all_true_profs, all_true_counts = [], []
+
     for input_seqs, profiles, statuses in t_iter:
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
         profiles = util.place_tensor(torch.tensor(profiles)).float()
@@ -196,7 +218,7 @@ def train_epoch(
         
         if att_prior_loss_weight > 0:
             input_seqs.requires_grad = True  # Set gradient required
-            log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
+            logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
             model.zero_grad()  # Clear gradients
             log_pred_counts.backward(
                 util.place_tensor(torch.ones(log_pred_counts.size())),
@@ -208,103 +230,74 @@ def train_epoch(
             status[status > 0] = 1  # Whenever not negative example, set to 1
             input_seqs.requires_grad = False  # Reset gradient required
         else:
-            log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
-            status, input_grads = None, None
-
-        optimizer.zero_grad()  # Clear gradients from last batch
-        loss, (corr_loss, att_loss) = model_loss(
-            model, tf_profs, log_pred_profs, log_pred_counts, status,
-            input_grads
-        )
-
-        loss.backward()  # Compute gradient
-        optimizer.step()  # Update weights through backprop
-        
-        batch_losses.append(loss.item())
-        corr_losses.append(corr_loss.item())
-        att_losses.append(att_loss.item())
-        t_iter.set_description(
-            "\tTraining loss: %6.10f" % loss.item()
-        )
-
-    return batch_losses, corr_losses, att_losses
-
-
-@train_ex.capture
-def eval_epoch(val_loader, model, num_tasks, att_prior_loss_weight):
-    """
-    Runs the data from the validation loader once through the model, and
-    saves the output results. Returns a list of losses for the batches, a list
-    of correction losses specifically for the batches, and a list of attribution
-    prior losses specifically for the batches. If the attribution prior loss is
-    not computed, then the list will have all 0s. Note that the data loader is
-    expected to return profiles where the first half of the tasks are prediction
-    profiles, and the second half are control profiles.
-    """ 
-    val_loader.dataset.on_epoch_start()  # Set-up the epoch
-    num_batches = len(val_loader.dataset)
-    t_iter = tqdm.tqdm(
-        val_loader, total=num_batches, desc="\tValidation loss: ---"
-    )
-
-    model.eval()  # Switch to evaluation mode
-
-    batch_losses, corr_losses, att_losses = [], [], []
-
-    for input_seqs, profiles, statuses in t_iter:
-        input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
-        profiles = util.place_tensor(torch.tensor(profiles)).float()
-        
-        tf_profs = profiles[:, :num_tasks, :, :]
-        cont_profs = profiles[:, num_tasks:, :, :]
-        
-        # Make channels come first in input
-        input_seqs = torch.transpose(input_seqs, 1, 2)
-
-        if att_prior_loss_weight > 0:
-            input_seqs.requires_grad = True  # Set gradient required
-            log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
-            model.zero_grad()  # Clear gradients
-            log_pred_counts.backward(
-                util.place_tensor(torch.ones(log_pred_counts.size())),
-                retain_graph=True
-            )  # Sum gradients across strands and tasks
-            input_grads = input_seqs.grad * input_seqs  # Gradient * input
-            input_grads = input_grads.transpose(1, 2)  # B x I x D
-            status = util.place_tensor(torch.tensor(statuses))
-            status[status > 0] = 1  # Whenever not negative example, set to 1
-            input_seqs.requires_grad = False  # Reset gradient required
-        else:
-            log_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
+            logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
             status, input_grads = None, None
 
         loss, (corr_loss, att_loss) = model_loss(
-            model, tf_profs, log_pred_profs, log_pred_counts, status,
+            model, tf_profs, logit_pred_profs, log_pred_counts, status,
             input_grads
         )
+        
+        if mode == "train":
+            optimizer.zero_grad()  # Clear gradients from last batch
+            loss.backward()  # Compute gradient
+            optimizer.step()  # Update weights through backprop
 
         batch_losses.append(loss.item())
         corr_losses.append(corr_loss.item())
         att_losses.append(att_loss.item())
         t_iter.set_description(
-            "\tValidation loss: %6.10f" % loss.item()
+            "\tLoss: %6.4f" % loss.item()
         )
 
-    return batch_losses, corr_losses, att_losses
+        if return_data:
+            all_logit_pred_profs.append(
+                logit_pred_profs.detach().to("cpu").numpy()
+            )
+            all_log_pred_counts.append(
+                log_pred_counts.detach().to("cpu").numpy()
+            )
+            tf_profs_np = tf_profs.detach().to("cpu").numpy()
+            all_true_profs.append(tf_profs_np)
+            all_true_counts.append(np.sum(tf_profs_np, axis=3))
+
+    if return_data:
+        all_logit_pred_profs = np.concatenate(all_logit_pred_profs)
+        all_log_pred_counts = np.concatenate(all_log_pred_counts)
+        all_true_profs = np.concatenate(all_true_profs)
+        all_true_counts = np.concatenate(all_true_counts)
+        # Transpose the profiles from N x T x 2 x O to N x T x O x 2
+        all_logit_pred_profs = np.swapaxes(all_logit_pred_profs, 2, 3)
+        all_true_profs = np.swapaxes(all_true_profs, 2, 3)
+        all_log_pred_profs = profile_models.profile_logits_to_log_probs(
+            all_logit_pred_profs
+        )
+
+        return batch_losses, corr_losses, att_losses, all_log_pred_profs, \
+            all_log_pred_counts, all_true_profs, all_true_counts
+    else:
+        return batch_losses, corr_losses, att_losses
 
 
 @train_ex.capture
-def train(
-    train_loader, val_loader, num_epochs, learning_rate, early_stopping,
-    early_stop_hist_len, early_stop_min_delta, train_seed, _run
+def train_model(
+    train_loader, val_loader, summit_loader, peak_loader, num_epochs,
+    learning_rate, early_stopping, early_stop_hist_len, early_stop_min_delta,
+    train_seed, _run
 ):
     """
     Trains the network for the given training and validation data.
     Arguments:
         `train_loader` (DataLoader): a data loader for the training data, each
-            batch giving the 1-hot encoded sequence and values
+            batch giving the 1-hot encoded sequence, profiles, and statuses
         `val_loader` (DataLoader): a data loader for the validation data, each
-            batch giving the 1-hot encoded sequence and values
+            batch giving the 1-hot encoded sequence, profiles, and statuses
+        `summit_loader` (DataLoader): a data loader for the validation data,
+            with coordinates centered at summits, each batch giving the 1-hot
+            encoded sequence, profiles, and statuses
+        `peak_loader` (DataLoader): a data loader for the validation data,
+            with coordinates tiled across peaks, each batch giving the 1-hot
+            encoded sequence, profiles, and statuses
     """
     run_num = _run._id
     output_dir = os.path.join(MODEL_DIR, str(run_num))
@@ -327,8 +320,8 @@ def train(
         if torch.cuda.is_available:
             torch.cuda.empty_cache()  # Clear GPU memory
 
-        t_batch_losses, t_corr_losses, t_att_losses = train_epoch(
-            train_loader, model, optimizer
+        t_batch_losses, t_corr_losses, t_att_losses = run_epoch(
+            train_loader, "train", model, optimizer=optimizer
         )
         train_epoch_loss = np.nanmean(t_batch_losses)
         print(
@@ -341,9 +334,8 @@ def train(
         _run.log_scalar("train_corr_losses", t_corr_losses)
         _run.log_scalar("train_att_losses", t_att_losses)
 
-        v_batch_losses, v_corr_losses, v_att_losses = \
-        eval_epoch(
-            val_loader, model
+        v_batch_losses, v_corr_losses, v_att_losses = run_epoch(
+            val_loader, "eval", model
         )
         val_epoch_loss = np.nanmean(v_batch_losses)
         print(
@@ -379,21 +371,42 @@ def train(
                 if best_delta < early_stop_min_delta:
                     break  # Not improving enough
 
+    # Compute evaluation metrics and log them
+    for data_loader, prefix in [
+        (summit_loader, "summit"), (peak_loader, "peak"),
+        (val_loader, "genomewide")
+    ]:
+        print("Computing validation metrics, %s:" % prefix)
+        _, _, _, log_pred_profs, log_pred_counts, true_profs, true_counts = \
+            run_epoch(
+                data_loader, "eval", model, return_data=True
+        )
+        metrics = profile_performance.compute_performance_metrics(
+            true_profs, log_pred_profs, true_counts, log_pred_counts
+        )
+        profile_performance.log_performance_metrics(metrics, prefix,  _run)
+
 
 @train_ex.command
 def run_training(train_peak_beds, val_peak_beds, prof_bigwigs):
     train_loader = make_profile_dataset.create_data_loader(
-        train_peak_beds, prof_bigwigs
+        train_peak_beds, prof_bigwigs, "SamplingCoordsBatcher"
     )
     val_loader = make_profile_dataset.create_data_loader(
-        val_peak_beds, prof_bigwigs
+        val_peak_beds, prof_bigwigs, "SamplingCoordsBatcher"
     )
-    train(train_loader, val_loader)
+    summit_loader = make_profile_dataset.create_data_loader(
+        val_peak_beds, prof_bigwigs, "SummitCenteringCoordsBatcher"
+    )
+    peak_loader = make_profile_dataset.create_data_loader(
+        val_peak_beds, prof_bigwigs, "PeakTilingCoordsBatcher"
+    )
+    train_model(train_loader, val_loader, summit_loader, peak_loader)
 
 
 @train_ex.automain
 def main():
-    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/profile/OLD/SPI1"
+    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/profile/labels/SPI1"
 
     train_peak_beds = [
         os.path.join(base_path, ending) for ending in [
@@ -406,10 +419,10 @@ def main():
 
     val_peak_beds = [
         os.path.join(base_path, ending) for ending in [
-            "SPI1_ENCSR000BGQ_GM12878_holdout_peakints.bed.gz",
-            "SPI1_ENCSR000BGW_K562_holdout_peakints.bed.gz",
-            "SPI1_ENCSR000BIJ_GM12891_holdout_peakints.bed.gz",
-            "SPI1_ENCSR000BUW_HL-60_holdout_peakints.bed.gz"
+            "SPI1_ENCSR000BGQ_GM12878_val_peakints.bed.gz",
+            "SPI1_ENCSR000BGW_K562_val_peakints.bed.gz",
+            "SPI1_ENCSR000BIJ_GM12891_val_peakints.bed.gz",
+            "SPI1_ENCSR000BUW_HL-60_val_peakints.bed.gz"
         ]
     ]
             

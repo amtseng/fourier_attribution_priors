@@ -38,7 +38,7 @@ def config():
     negative_ratio = 1
 
     # Use this stride when tiling coordinates across a peak
-    peak_tiling_stride = 20
+    peak_tiling_stride = 25
 
     # Number of workers for the data loader
     num_workers = 10

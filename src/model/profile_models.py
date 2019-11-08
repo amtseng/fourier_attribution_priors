@@ -113,10 +113,6 @@ class ProfileTFBindingPredictor(torch.nn.Module):
 
         # Profile prediction:
         # Convolutional layer with large kernel
-        # TODO: Transposed convolution?
-        # self.prof_first_conv = torch.nn.ConvTranspose1d(
-        #     in_channels=64, out_channels=num_tasks, kernel_size=75
-        # )
         self.prof_large_conv = torch.nn.Conv1d(
             in_channels=dil_conv_depths[-1], out_channels=(num_tasks * 2),
             kernel_size=prof_conv_kernel_size
@@ -374,5 +370,4 @@ def profile_logits_to_log_probs(logit_pred_profs):
         return logit_pred_profs - \
             scipy.special.logsumexp(logit_pred_profs, axis=2, keepdims=True)
     else:
-        return logit_pred_profs - \
-            torch.logsumexp(logit_pred_profs, dim=2, keepdim=True)
+        return torch.nn.functional.log_softmax(logit_pred_profs, dim=2)

@@ -227,14 +227,15 @@ def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
 
 
 @train_ex.capture
-def eval_epoch(val_loader, model, att_prior_loss_weight):
+def eval_epoch(val_loader, model, att_prior_loss_weight, return_data=False):
     """
     Runs the data from the validation loader once through the model, and
     saves the output results. Returns a list of losses for the batches, a list
     of correctness losses specifically for the batches, a list of attribution
     prior losses specifically for the batches, a NumPy array of predicted
     probabilities, and a NumPy array of true values. If the attribution prior
-    loss is not computed, then the list will have all 0s.
+    loss is not computed, then the list will have all 0s. If `return_data` is
+    True, also returns the true values and predicted values as NumPy arrays.
     """ 
     val_loader.dataset.on_epoch_start()  # Set-up the epoch
     num_batches = len(val_loader.dataset)
@@ -245,10 +246,12 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
     model.eval()  # Switch to evaluation mode
 
     batch_losses, corr_losses, att_losses = [], [], []
-    pred_val_arr, true_val_arr = [], []
+    if return_data:
+        true_val_arr, pred_val_arr = [], []
     for input_seqs, output_vals in t_iter:
         batch_size = output_vals.shape[0]
-        true_val_arr.append(output_vals)
+        if return_data:
+            true_val_arr.append(output_vals)
 
         input_seqs_t = util.place_tensor(torch.tensor(input_seqs)).float()
         output_vals_t = util.place_tensor(torch.tensor(output_vals)).float()
@@ -260,7 +263,8 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
             torch.set_grad_enabled(True)  # We actually do need grad here
             input_seqs_t.requires_grad = True  # Set gradient required
             probs = model(input_seqs_t)
-            pred_val_arr.append(probs.detach().to("cpu").numpy())
+            if return_data:
+                pred_val_arr.append(probs.detach().to("cpu").numpy())
             model.zero_grad()  # Clear gradients
             probs.backward(
                 util.place_tensor(torch.ones(probs.size())),
@@ -277,7 +281,8 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
             torch.set_grad_enabled(False)
             model.zero_grad()  # Clear gradients from last batch
             probs = model(input_seqs_t)
-            pred_val_arr.append(probs.detach().to("cpu").numpy())
+            if return_data:
+                pred_val_arr.append(probs.detach().to("cpu").numpy())
             status, input_grads = None, None
 
         loss, (corr_loss, att_loss) = model_loss(
@@ -292,10 +297,12 @@ def eval_epoch(val_loader, model, att_prior_loss_weight):
             "\tValidation loss: %6.10f" % loss.item()
         )
 
-    pred_vals = np.concatenate(pred_val_arr)
-    true_vals = np.concatenate(true_val_arr)
-
-    return batch_losses, corr_losses, att_losses, pred_vals, true_vals
+    if return_data:
+        pred_vals = np.concatenate(pred_val_arr)
+        true_vals = np.concatenate(true_val_arr)
+        return batch_losses, corr_losses, att_losses, pred_vals, true_vals
+    else:
+        return batch_losses, corr_losses, att_losses
 
 
 @train_ex.capture
@@ -347,8 +354,7 @@ def train(
         _run.log_scalar("train_corr_losses", t_corr_losses)
         _run.log_scalar("train_att_losses", t_att_losses)
 
-        v_batch_losses, v_corr_losses, v_att_losses, pred_vals, true_vals = \
-        eval_epoch(
+        v_batch_losses, v_corr_losses, v_att_losses = eval_epoch(
             val_loader, model
         )
         val_epoch_loss = np.nanmean(v_batch_losses)
@@ -387,6 +393,9 @@ def train(
 
     # Compute evaluation metrics and log them
     print("Computing final validation metrics:")
+    _, _, _, pred_vals, true_vals = eval_epoch(
+        val_loader, model, return_data=True
+    )
     metrics = binary_performance.compute_evaluation_metrics(
         true_vals, pred_vals, val_neg_downsample
     )
