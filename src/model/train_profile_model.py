@@ -62,7 +62,7 @@ def config(dataset):
     att_prior_pos_weight = 1.0
 
     # Number of training epochs
-    num_epochs = 1
+    num_epochs = 10
 
     # Learning rate
     learning_rate = 0.004
@@ -78,6 +78,12 @@ def config(dataset):
 
     # Training seed
     train_seed = None
+
+    # Imported from make_profile_dataset
+    batch_size = dataset["batch_size"]
+
+    # Imported from make_profile_dataset
+    revcomp = dataset["revcomp"]
 
     # Imported from make_profile_dataset
     input_length = dataset["input_length"]
@@ -161,8 +167,8 @@ def model_loss(
 
 @train_ex.capture
 def run_epoch(
-    data_loader, mode, model, num_tasks, att_prior_loss_weight, optimizer=None,
-    return_data=False
+    data_loader, mode, model, num_tasks, att_prior_loss_weight, batch_size,
+    revcomp, profile_length, optimizer=None, return_data=False
 ):
     """
     Runs the data from the data loader once through the model, to train,
@@ -203,8 +209,17 @@ def run_epoch(
 
     batch_losses, corr_losses, att_losses = [], [], []
     if return_data:
-        all_logit_pred_profs, all_log_pred_counts = [], []
-        all_true_profs, all_true_counts = [], []
+        # Allocate empty NumPy arrays to hold the results
+        num_samples_exp = num_batches * batch_size
+        num_samples_exp *= 2 if revcomp else 1
+        # Real number of samples can be smaller because of partial last batch
+        profile_shape = (num_samples_exp, num_tasks, profile_length, 2)
+        count_shape = (num_samples_exp, num_tasks, 2)
+        all_log_pred_profs = np.empty(profile_shape)
+        all_log_pred_counts = np.empty(count_shape)
+        all_true_profs = np.empty(profile_shape)
+        all_true_counts = np.empty(count_shape)
+        num_samples_seen = 0  # Real number of samples seen
 
     for input_seqs, profiles, statuses in t_iter:
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
@@ -251,28 +266,37 @@ def run_epoch(
         )
 
         if return_data:
-            all_logit_pred_profs.append(
-                logit_pred_profs.detach().to("cpu").numpy()
+            logit_pred_profs_np = logit_pred_profs.detach().cpu().numpy()
+            log_pred_counts_np = log_pred_counts.detach().cpu().numpy()
+            true_profs_np = tf_profs.detach().cpu().numpy()
+            true_counts = np.sum(true_profs_np, axis=3)
+
+            num_in_batch = true_counts.shape[0]
+            # Transpose the profiles from N x T x 2 x O to N x T x O x 2
+            logit_pred_profs_np = np.swapaxes(logit_pred_profs_np, 2, 3)
+            true_profs_np = np.swapaxes(true_profs_np, 2, 3)
+          
+            # Turn logit profile predictions into log probabilities
+            log_pred_profs = profile_models.profile_logits_to_log_probs(
+                logit_pred_profs_np
             )
-            all_log_pred_counts.append(
-                log_pred_counts.detach().to("cpu").numpy()
-            )
-            tf_profs_np = tf_profs.detach().to("cpu").numpy()
-            all_true_profs.append(tf_profs_np)
-            all_true_counts.append(np.sum(tf_profs_np, axis=3))
+
+            # Fill in the batch data/outputs into the preallocated arrays
+            start, end = num_samples_seen, num_samples_seen + num_in_batch
+            all_log_pred_profs[start:end] = log_pred_profs
+            all_log_pred_counts[start:end] = log_pred_counts_np
+            all_true_profs[start:end] = true_profs_np
+            all_true_counts[start:end] = true_counts
+
+            num_samples_seen += num_in_batch
 
     if return_data:
-        all_logit_pred_profs = np.concatenate(all_logit_pred_profs)
-        all_log_pred_counts = np.concatenate(all_log_pred_counts)
-        all_true_profs = np.concatenate(all_true_profs)
-        all_true_counts = np.concatenate(all_true_counts)
-        # Transpose the profiles from N x T x 2 x O to N x T x O x 2
-        all_logit_pred_profs = np.swapaxes(all_logit_pred_profs, 2, 3)
-        all_true_profs = np.swapaxes(all_true_profs, 2, 3)
-        all_log_pred_profs = profile_models.profile_logits_to_log_probs(
-            all_logit_pred_profs
-        )
-
+        # Truncate the saved data to the proper size, based on how many
+        # samples actually seen
+        all_log_pred_profs = all_log_pred_profs[:num_samples_seen]
+        all_log_pred_counts = all_log_pred_counts[:num_samples_seen]
+        all_true_profs = all_true_profs[:num_samples_seen]
+        all_true_counts = all_true_counts[:num_samples_seen]
         return batch_losses, corr_losses, att_losses, all_log_pred_profs, \
             all_log_pred_counts, all_true_profs, all_true_counts
     else:
@@ -381,6 +405,7 @@ def train_model(
             run_epoch(
                 data_loader, "eval", model, return_data=True
         )
+        
         metrics = profile_performance.compute_performance_metrics(
             true_profs, log_pred_profs, true_counts, log_pred_counts
         )

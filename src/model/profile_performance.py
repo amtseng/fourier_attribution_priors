@@ -5,6 +5,7 @@ import sklearn.metrics
 import scipy.stats
 import scipy.spatial.distance
 import warnings
+from datetime import datetime
 
 performance_ex = sacred.Experiment("performance")
 
@@ -90,15 +91,16 @@ def profile_jsd(true_prof_probs, pred_prof_probs):
 
 def bin_array_max(arr, bin_size, pad=0):
     """
-    Given a 1D array, returns a binned version of the array, where each bin
-    contains the maximum value of its constituent elements. If the array is
-    not a length that is a multiple of the bin size, then the given pad will be
-    used at the end.
+    Given a NumPy array, returns a binned version of the array along the last
+    dimension, where each bin contains the maximum value of its constituent
+    elements. If the array is not a length that is a multiple of the bin size,
+    then the given pad will be used at the end.
     """
-    pad_amount = len(arr) % bin_size
+    pad_amount = arr.shape[-1] % bin_size
     if pad_amount:
-        arr = np.concatenate([arr, np.full(pad_amount, pad)])
-    return np.max(np.reshape(arr, (len(arr) // bin_size, bin_size)), axis=1)
+        arr = np.pad(arr, ([(0, 0)] * (arr.ndim - 1)) + [(0, pad_amount)])
+    new_shape = arr.shape[:-1] + (arr.shape[-1] // bin_size, bin_size)
+    return np.max(np.reshape(arr, new_shape), axis=-1)
 
 
 @performance_ex.capture
@@ -181,6 +183,98 @@ def binned_profile_auprc(
     return result
 
 
+def pearson_corr(arr1, arr2):
+    """
+    Computes the Pearson correlation in the last dimension of `arr1` and `arr2`.
+    `arr1` and `arr2` must be the same shape. For example, if they are both
+    A x B x L arrays, then the correlation of corresponding L-arrays will be
+    computed and returned in an A x B array.
+    """
+    mean1 = np.mean(arr1, axis=-1, keepdims=True)
+    mean2 = np.mean(arr2, axis=-1, keepdims=True)
+    dev1, dev2 = arr1 - mean1, arr2 - mean2
+    sqdev1, sqdev2 = np.square(dev1), np.square(dev2)
+    numer = np.sum(dev1 * dev2, axis=-1)  # Covariance
+    var1, var2 = np.sum(sqdev1, axis=-1), np.sum(sqdev2, axis=-1)  # Variances
+    denom = np.sqrt(var1 * var2)
+   
+    # Divide numerator by denominator, but use NaN where the denominator is 0
+    return np.divide(
+        numer, denom, out=np.full_like(numer, np.nan), where=(denom != 0)
+    )
+
+
+def average_ranks(arr):
+    """
+    Computes the ranks of the elemtns of the given array along the last
+    dimension. For ties, the ranks are _averaged_.
+    Returns an array of the same dimension of `arr`. 
+    """
+    # 1) Generate the ranks for each subarray, with ties broken arbitrarily
+    sorted_inds = np.argsort(arr, axis=-1)  # Sorted indices
+    ranks, ranges = np.empty_like(arr), np.empty_like(arr)
+    ranges = np.tile(np.arange(arr.shape[-1]), arr.shape[:-1] + (1,))
+    # Put ranks by sorted indices; this creates an array containing the ranks of
+    # the elements in each subarray of `arr`
+    np.put_along_axis(ranks, sorted_inds, ranges, -1)
+    ranks = ranks.astype(int)
+
+    # 2) Create an array where each entry maps a UNIQUE element in `arr` to a
+    # unique index for that subarray
+    sorted_arr = np.take_along_axis(arr, sorted_inds, axis=-1)
+    diffs = np.diff(sorted_arr, axis=-1)
+    # Pad with an extra zero at the beginning of every subarray
+    pad_diffs = np.pad(diffs, ([(0, 0)] * (diffs.ndim - 1)) + [(1, 0)])
+    # Wherever the diff is not 0, assign a value of 1; this gives a set of
+    # small indices for each set of unique values in the sorted array after
+    # taking a cumulative sum
+    pad_diffs[pad_diffs != 0] = 1
+    unique_inds = np.cumsum(pad_diffs, axis=-1).astype(int)
+
+    # 3) Average the ranks wherever the entries of the `arr` were identical
+    # `unique_inds` contains elements that are indices to an array that stores
+    # the average of the ranks of each unique element in the original array
+    unique_maxes = np.zeros_like(arr)  # Maximum ranks for each unique index
+    # Each subarray will contain unused entries if there are no repeats in that
+    # subarray; this is a sacrifice made for vectorization; c'est la vie
+    # Using `put_along_axis` will put the _last_ thing seen in `ranges`, which
+    # result in putting the maximum rank in each unique location
+    np.put_along_axis(unique_maxes, unique_inds, ranges, -1)
+    # We can compute the average rank for each bucket (from the maximum rank for
+    # each bucket) using some algebraic manipulation
+    diff = np.diff(unique_maxes, prepend=-1, axis=-1)  # Note: prepend -1!
+    unique_avgs = unique_maxes - ((diff - 1) / 2)
+
+    # 4) Using the averaged ranks in `unique_avgs`, fill them into where they
+    # belong
+    avg_ranks = np.take_along_axis(
+        unique_avgs, np.take_along_axis(unique_inds, ranks, -1), -1
+    )
+
+    return avg_ranks
+
+
+def spearman_corr(arr1, arr2):
+    """
+    Computes the Spearman correlation in the last dimension of `arr1` and
+    `arr2`. `arr1` and `arr2` must be the same shape. For example, if they are
+    both A x B x L arrays, then the correlation of corresponding L-arrays will
+    be computed and returned in an A x B array.
+    """
+    ranks1, ranks2 = average_ranks(arr1), average_ranks(arr2)
+    return pearson_corr(ranks1, ranks2)
+
+
+def mean_squared_error(arr1, arr2):
+    """
+    Computes the mean squared error in the last dimension of `arr1` and `arr2`.
+    `arr1` and `arr2` must be the same shape. For example, if they are both
+    A x B x L arrays, then the MSE of corresponding L-arrays will be computed
+    and returned in an A x B array.
+    """
+    return np.mean(np.square(arr1 - arr2), axis=-1)
+
+
 @performance_ex.capture
 def binned_count_corr_mse(
     log_true_prof_counts, log_pred_prof_counts, prof_count_corr_bin_sizes
@@ -209,29 +303,12 @@ def binned_count_corr_mse(
     log_true_prof_counts_flat = np.reshape(log_true_prof_counts, new_shape)
     log_pred_prof_counts_flat = np.reshape(log_pred_prof_counts, new_shape)
 
-    for i in range(num_samples):
-        for j in range(num_tasks):
-            true_count_slice = log_true_prof_counts_flat[i, j]
-            pred_count_slice = log_pred_prof_counts_flat[i, j]
-
-            for k, bin_size in enumerate(prof_count_corr_bin_sizes):
-                # Bin the values, taking the maximum for each bin
-                true_count_bins = bin_array_max(true_count_slice, bin_size)
-                pred_count_bins = bin_array_max(pred_count_slice, bin_size)
-
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    # Ignore warnings when computing correlations, to avoid
-                    # warnings when input is constant
-                    pears[i, j, k] = scipy.stats.pearsonr(
-                        true_count_bins, pred_count_bins
-                    )[0]
-                    spear[i, j, k] = scipy.stats.spearmanr(
-                        true_count_bins, pred_count_bins
-                    )[0]
-                mse[i, j, k] = sklearn.metrics.mean_squared_error(
-                    true_count_bins, pred_count_bins
-                )
+    for i, bin_size in enumerate(prof_count_corr_bin_sizes):
+        true_count_binned = bin_array_max(log_true_prof_counts_flat, bin_size)
+        pred_count_binned = bin_array_max(log_pred_prof_counts_flat, bin_size)
+        pears[:, :, i] = pearson_corr(true_count_binned, pred_count_binned)
+        spear[:, :, i] = spearman_corr(true_count_binned, pred_count_binned)
+        mse[:, :, i] = mean_squared_error(true_count_binned, pred_count_binned)
 
     return pears, spear, mse
 
@@ -258,22 +335,16 @@ def total_count_corr_mse(log_true_total_counts, log_pred_total_counts):
         np.swapaxes(log_pred_total_counts, 0, 1), (num_tasks, -1)
     )
 
-    # For each task, compute the correlations/MSE
-    pears, spear, mse = [], [], []
+    pears = pearson_corr(log_true_total_counts, log_pred_total_counts)
+    spear = spearman_corr(log_true_total_counts, log_pred_total_counts)
+    mse = mean_squared_error(log_true_total_counts, log_pred_total_counts)
 
-    for j in range(num_tasks):
-        true_counts = log_true_total_counts[j]
-        pred_counts = log_pred_total_counts[j]
-        pears.append(scipy.stats.pearsonr(true_counts, pred_counts)[0])
-        spear.append(scipy.stats.spearmanr(true_counts, pred_counts)[0])
-        mse.append(sklearn.metrics.mean_squared_error(true_counts, pred_counts))
-
-    return np.array(pears), np.array(spear), np.array(mse)
+    return pears, spear, mse
 
 
 @performance_ex.capture
 def compute_performance_metrics(
-    true_profs, log_pred_profs, true_counts, log_pred_counts
+    true_profs, log_pred_profs, true_counts, log_pred_counts, print_updates=True
 ):
     """
     Computes some evaluation metrics on a set of positive examples, given the
@@ -289,6 +360,7 @@ def compute_performance_metrics(
             for each task and strand
         `log_pred_counts`: a N x T x 2 array, containing the predicted LOG total
             counts for each task and strand
+        `print_updates`: if True, print out updates and runtimes
     Returns 2 dictionaries. The first dictionary contains:
         A T-array of the average negative log likelihoods for the profiles
             (given predicted probabilities, the likelihood for the true counts)
@@ -317,16 +389,23 @@ def compute_performance_metrics(
     order of the predicted samples randomized relative to the true samples (i.e.
     shuffled along the first dimension)
     """
-    print("\tComputing NLL...", end="")
     # Multinomial NLL
+    if print_updates:
+        print("\t\tComputing NLL... ", end="", flush=True)
+        start = datetime.now()
     nll = profile_multinomial_nll(
         true_profs, log_pred_profs, true_counts
     )
+    if print_updates:
+        end = datetime.now()
+        print("%ds" % (end - start).seconds)
 
-    print("\r\tComputing JSD...", end="")
     # Jensen-Shannon divergence
     # Normalize true profile (counts) into probabilities, keeping 1s when the
     # sum is 0; upon renormalization, this would avoid dividing by 0
+    if print_updates:
+        print("\t\tComputing JSD... ", end="", flush=True)
+        start = datetime.now()
     true_counts_dim = np.expand_dims(true_counts, axis=2)
     true_prof_probs = np.divide(
         true_profs, true_counts_dim,
@@ -335,26 +414,42 @@ def compute_performance_metrics(
     )
     pred_prof_probs = np.exp(log_pred_profs)
     jsd = profile_jsd(true_prof_probs, pred_prof_probs)
+    if print_updates:
+        end = datetime.now()
+        print("%ds" % (end - start).seconds)
 
-    print("\r\tComputing auPRC...", end="")
+    if print_updates:
+        print("\t\tComputing auPRC... ", end="", flush=True)
+        start = datetime.now()
     # Binned auPRC
     auprc = binned_profile_auprc(true_profs, pred_prof_probs, true_counts)
+    if print_updates:
+        end = datetime.now()
+        print("%ds" % (end - start).seconds)
 
-    print("\r\tComputing correlations/MSE (binned)", end="")
+    if print_updates:
+        print("\t\tComputing correlations/MSE (binned)... ", end="", flush=True)
+        start = datetime.now()
     # Binned profile count correlations/MSE
     log_true_profs = np.log(true_profs + 1)
     pears_bin, spear_bin, mse_bin = binned_count_corr_mse(
         log_true_profs, log_pred_profs
     )
+    if print_updates:
+        end = datetime.now()
+        print("%ds" % (end - start).seconds)
 
-    print("\r\tComputing correlations/MSE (total)", end="")
+    if print_updates:
+        print("\t\tComputing correlations/MSE (total)... ", end="", flush=True)
+        start = datetime.now()
     # Total count correlations/MSE
     log_true_counts = np.log(true_counts + 1)
     pears_tot, spear_tot, mse_tot = total_count_corr_mse(
         log_true_counts, log_pred_counts
     )
-
-    print("\r")
+    if print_updates:
+        end = datetime.now()
+        print("%ds" % (end - start).seconds)
 
     return {
         "nll": nll,
@@ -451,3 +546,112 @@ def log_performance_metrics(
         print(("\t%s count MSE: " % prefix) + ", ".join(
             [("%6.6f" % x) for x in mse_tot]
         ))
+
+
+@performance_ex.command
+def test1():
+    from datetime import datetime
+    np.random.seed(20191110)
+    num_corrs, corr_len = 500, 1000
+    arr1 = np.random.randint(100, size=(num_corrs, corr_len))
+    arr2 = np.random.randint(100, size=(num_corrs, corr_len))
+
+    print("Pearson correlation:")
+    pears_scipy = np.empty(num_corrs)
+    a = datetime.now()
+    for i in range(num_corrs):
+        pears_scipy[i] = scipy.stats.pearsonr(arr1[i], arr2[i])[0]
+    b = datetime.now()
+    print("\tTime to compute (Scipy): %ds" % (b - a).seconds)
+
+    a = datetime.now()
+    pears_vect = pearson_corr(arr1, arr2) 
+    b = datetime.now()
+    print("\tTime to compute (vectorized): %ds" % (b - a).seconds)
+    print("\tSame result? %s" % np.allclose(pears_vect, pears_scipy))
+
+    print("Spearman correlation:")
+    spear_scipy = np.empty(num_corrs)
+    a = datetime.now()
+    for i in range(num_corrs):
+        spear_scipy[i] = scipy.stats.spearmanr(arr1[i], arr2[i])[0]
+    b = datetime.now()
+    print("\tTime to compute (Scipy): %ds" % (b - a).seconds)
+
+    a = datetime.now()
+    spear_vect = spearman_corr(arr1, arr2) 
+    b = datetime.now()
+    print("\tTime to compute (vectorized): %ds" % (b - a).seconds)
+    print("\tSame result? %s" % np.allclose(spear_vect, spear_scipy))
+
+
+@performance_ex.command
+def test2():
+    from datetime import datetime
+    np.random.seed(20191110)
+    num_samples, num_tasks, profile_len = 500, 4, 1000
+    bin_sizes = [1, 4, 10]
+    arr1 = np.random.randint(100, size=(num_samples, num_tasks, profile_len, 2))
+    arr2 = np.random.randint(100, size=(num_samples, num_tasks, profile_len, 2))
+    arr3 = np.random.randint(100, size=(num_samples, num_tasks, 2))
+    arr4 = np.random.randint(100, size=(num_samples, num_tasks, 2))
+
+    print("Testing binned correlation and MSE...")
+    a = datetime.now()
+    # Combine the profile length and strand dimensions (i.e. pool strands)
+    new_shape = (num_samples, num_tasks, -1)
+    arr1_flat, arr2_flat = np.reshape(arr1, new_shape), np.reshape(arr2, new_shape)
+    pears_scipy = np.empty((num_samples, num_tasks, len(bin_sizes)))
+    spear_scipy = np.empty((num_samples, num_tasks, len(bin_sizes)))
+    mse_scipy = np.empty((num_samples, num_tasks, len(bin_sizes)))
+    for i in range(num_samples):
+        for j in range(num_tasks):
+            slice1, slice2 = arr1_flat[i, j], arr2_flat[i, j]
+            for k, bin_size in enumerate(bin_sizes):
+                # Bin the values, taking the maximum for each bin
+                bins1 = bin_array_max(slice1, bin_size)
+                bins2 = bin_array_max(slice2, bin_size)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    # Ignore warnings when computing correlations, to avoid
+                    # warnings when input is constant
+                    pears_scipy[i, j, k] = scipy.stats.pearsonr(bins1, bins2)[0]
+                    spear_scipy[i, j, k] = scipy.stats.spearmanr(bins1, bins2)[0]
+                    mse_scipy[i, j, k] = sklearn.metrics.mean_squared_error(bins1, bins2)
+    b = datetime.now()
+    print("\tTime to compute (SciPy): %ds" % (b - a).seconds)
+    
+    a = datetime.now()
+    pears_vec, spear_vec, mse_vec = binned_count_corr_mse(arr1, arr2, [1, 4, 10])
+    b = datetime.now()
+    print("\tTime to compute (vectorized): %ds" % (b - a).seconds)
+
+    print("\tSame Pearson result? %s" % np.allclose(pears_vec, pears_scipy))
+    print("\tSame Spearman result? %s" % np.allclose(spear_vec, spear_scipy))
+    print("\tSame MSE result? %s" % np.allclose(mse_vec, mse_scipy))
+
+
+    print("Testing total correlation and MSE...")
+    a = datetime.now()
+    # Reshape inputs to be T x N * 2 (i.e. pool samples and strands)
+    arr3_swap = np.reshape(np.swapaxes(arr3, 0, 1), (num_tasks, -1))
+    arr4_swap = np.reshape(np.swapaxes(arr4, 0, 1), (num_tasks, -1))
+
+    # For each task, compute the correlations/MSE
+    pears_scipy, spear_scipy, mse_scipy = np.empty(num_tasks), np.empty(num_tasks), np.empty(num_tasks)
+    for j in range(num_tasks):
+        arr3_list, arr4_list = arr3_swap[j], arr4_swap[j]
+        pears_scipy[j] = scipy.stats.pearsonr(arr3_list, arr4_list)[0]
+        spear_scipy[j] = scipy.stats.spearmanr(arr3_list, arr4_list)[0]
+        mse_scipy[j] = sklearn.metrics.mean_squared_error(arr3_list, arr4_list)
+    b = datetime.now()
+    print("\tTime to compute (SciPy): %ds" % (b - a).seconds)
+    
+    a = datetime.now()
+    pears_vec, spear_vec, mse_vec = total_count_corr_mse(arr3, arr4)
+    b = datetime.now()
+    print("\tTime to compute (vectorized): %ds" % (b - a).seconds)
+
+    print("\tSame Pearson result? %s" % np.allclose(pears_vec, pears_scipy))
+    print("\tSame Spearman result? %s" % np.allclose(spear_vec, spear_scipy))
+    print("\tSame MSE result? %s" % np.allclose(mse_vec, mse_scipy))
