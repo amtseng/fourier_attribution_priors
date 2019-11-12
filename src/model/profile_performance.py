@@ -223,13 +223,16 @@ def average_ranks(arr):
     # unique index for that subarray
     sorted_arr = np.take_along_axis(arr, sorted_inds, axis=-1)
     diffs = np.diff(sorted_arr, axis=-1)
+    del sorted_arr  # Garbage collect
     # Pad with an extra zero at the beginning of every subarray
     pad_diffs = np.pad(diffs, ([(0, 0)] * (diffs.ndim - 1)) + [(1, 0)])
+    del diffs  # Garbage collect
     # Wherever the diff is not 0, assign a value of 1; this gives a set of
     # small indices for each set of unique values in the sorted array after
     # taking a cumulative sum
     pad_diffs[pad_diffs != 0] = 1
     unique_inds = np.cumsum(pad_diffs, axis=-1).astype(int)
+    del pad_diffs  # Garbage collect
 
     # 3) Average the ranks wherever the entries of the `arr` were identical
     # `unique_inds` contains elements that are indices to an array that stores
@@ -244,6 +247,7 @@ def average_ranks(arr):
     # each bucket) using some algebraic manipulation
     diff = np.diff(unique_maxes, prepend=-1, axis=-1)  # Note: prepend -1!
     unique_avgs = unique_maxes - ((diff - 1) / 2)
+    del unique_maxes, diff  # Garbage collect
 
     # 4) Using the averaged ranks in `unique_avgs`, fill them into where they
     # belong
@@ -277,7 +281,8 @@ def mean_squared_error(arr1, arr2):
 
 @performance_ex.capture
 def binned_count_corr_mse(
-    log_true_prof_counts, log_pred_prof_counts, prof_count_corr_bin_sizes
+    log_true_prof_counts, log_pred_prof_counts, prof_count_corr_bin_sizes,
+    batch_size=50000
 ):
     """
     Returns the correlations of the true and predicted PROFILE counts (i.e.
@@ -287,6 +292,7 @@ def binned_count_corr_mse(
             profile LOG COUNTS for each task and strand
         `log_pred_prof_counts`: a N x T x O x 2 array, containing the predicted
             profile LOG COUNTS for each task and strand
+        `batch_size`: performs computation in a batch size of this many samples
     Returns 3 N x T x Z arrays, containing the Pearson correlation, Spearman
     correlation, and mean squared error of the profile predictions (as log
     counts). Correlations/MSE are computed for each sample/task, for each bin
@@ -306,9 +312,13 @@ def binned_count_corr_mse(
     for i, bin_size in enumerate(prof_count_corr_bin_sizes):
         true_count_binned = bin_array_max(log_true_prof_counts_flat, bin_size)
         pred_count_binned = bin_array_max(log_pred_prof_counts_flat, bin_size)
-        pears[:, :, i] = pearson_corr(true_count_binned, pred_count_binned)
-        spear[:, :, i] = spearman_corr(true_count_binned, pred_count_binned)
-        mse[:, :, i] = mean_squared_error(true_count_binned, pred_count_binned)
+        for start in range(0, num_samples, batch_size):
+            end = start + batch_size
+            true_batch = true_count_binned[start:end, :, :]
+            pred_batch = pred_count_binned[start:end, :, :]
+            pears[start:end, :, i] = pearson_corr(true_batch, pred_batch)
+            spear[start:end, :, i] = spearman_corr(true_batch, pred_batch)
+            mse[start:end, :, i] = mean_squared_error(true_batch, pred_batch)
 
     return pears, spear, mse
 
@@ -426,6 +436,8 @@ def compute_performance_metrics(
     if print_updates:
         end = datetime.now()
         print("%ds" % (end - start).seconds)
+
+    del pred_prof_probs  # Garbage collect
 
     if print_updates:
         print("\t\tComputing correlations/MSE (binned)... ", end="", flush=True)

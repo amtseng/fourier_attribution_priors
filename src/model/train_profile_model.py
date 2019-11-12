@@ -405,7 +405,7 @@ def train_model(
             run_epoch(
                 data_loader, "eval", model, return_data=True
         )
-        
+
         metrics = profile_performance.compute_performance_metrics(
             true_profs, log_pred_profs, true_counts, log_pred_counts
         )
