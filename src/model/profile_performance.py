@@ -1,10 +1,6 @@
 import numpy as np
 import scipy.special
 import sacred
-import sklearn.metrics
-import scipy.stats
-import scipy.spatial.distance
-import warnings
 from datetime import datetime
 
 performance_ex = sacred.Experiment("performance")
@@ -61,32 +57,69 @@ def profile_multinomial_nll(
     return np.mean(nll, axis=1)
 
 
+def _kl_divergence(probs1, probs2):
+    """
+    Computes the KL divergence in the last dimension of `probs1` and `probs2`
+    as KL(P1 || P2). `probs1` and `probs2` must be the same shape. For example,
+    if they are both A x B x L arrays, then the KL divergence of corresponding
+    L-arrays will be computed and returned in an A x B array. Does not
+    renormalize the arrays. If probs2[i] is 0, that value contributes 0.
+    """
+    quot = np.divide(
+        probs1, probs2, out=np.ones_like(probs1),
+        where=((probs1 != 0) & (probs2 != 0))
+        # No contribution if P1 = 0 or P2 = 0
+    )
+    return np.sum(probs1 * np.log(quot), axis=-1)
+
+
+def jensen_shannon_distance(probs1, probs2):
+    """
+    Computes the Jesnsen-Shannon distance in the last dimension of `probs1` and
+    `probs2`. `probs1` and `probs2` must be the same shape. For example, if they
+    are both A x B x L arrays, then the KL divergence of corresponding L-arrays
+    will be computed and returned in an A x B array. This will renormalize the
+    arrays so that each subarray sums to 1. If the sum of a subarray is 0, then
+    the resulting JSD will be NaN.
+    """
+    # Renormalize both distributions, and if the sum is NaN, put NaNs all around
+    probs1_sum = np.sum(probs1, axis=-1, keepdims=True)
+    probs1 = np.divide(
+        probs1, probs1_sum, out=np.full_like(probs1, np.nan),
+        where=(probs1_sum != 0)
+    )
+    probs2_sum = np.sum(probs2, axis=-1, keepdims=True)
+    probs2 = np.divide(
+        probs2, probs2_sum, out=np.full_like(probs2, np.nan),
+        where=(probs2_sum != 0)
+    )
+
+    mid = 0.5 * (probs1 + probs2)
+    return 0.5 * (_kl_divergence(probs1, mid) + _kl_divergence(probs2, mid))
+
+
 def profile_jsd(true_prof_probs, pred_prof_probs):
     """
     Computes the Jensen-Shannon divergence of the true and predicted profiles
-    given their log probabilities.
+    given their raw probabilities or counts. The inputs will be renormalized
+    prior to JSD computation, so providing either raw probabilities or counts
+    is sufficient.
     Arguments:
         `true_prof_probs`: N x T x O x 2 array, where N is the number of
             examples, T is the number of tasks, O is the output profile length;
             contains the true profiles for each task and strand, as RAW
-            PROBABILITIES 
+            PROBABILITIES or RAW COUNTS
         `pred_prof_probs`: N x T x O x 2 array, containing the predicted
-            profiles for each task and strand, as RAW PROBABILITIES
+            profiles for each task and strand, as RAW PROBABILITIES or RAW
+            COUNTS
     Returns an N x T array, where the JSD is computed across the profiles and
     averaged between the strands, for each sample/task.
     """
-    num_samples, num_tasks = true_prof_probs.shape[:2]
-    result = np.zeros((num_samples, num_tasks))
-    for i in range(num_samples):
-        for j in range(num_tasks):
-            jsd_0 = scipy.spatial.distance.jensenshannon(
-                true_prof_probs[i, j, :, 0], pred_prof_probs[i, j, :, 0]
-            )
-            jsd_1 = scipy.spatial.distance.jensenshannon(
-                true_prof_probs[i, j, :, 1], pred_prof_probs[i, j, :, 1]
-            )
-            result[i][j] = np.mean(np.square([jsd_0, jsd_1]))
-    return result
+    # Transpose to N x T x 2 x O, so JSD is computed along last dimension
+    true_prof_swap = np.swapaxes(true_prof_probs, 2, 3)
+    pred_prof_swap = np.swapaxes(pred_prof_probs, 2, 3)
+    jsd = jensen_shannon_distance(true_prof_swap, pred_prof_swap)
+    return np.mean(jsd, axis=-1)  # Average over strands
 
 
 def bin_array_max(arr, bin_size, pad=0):
@@ -103,10 +136,101 @@ def bin_array_max(arr, bin_size, pad=0):
     return np.max(np.reshape(arr, new_shape), axis=-1)
 
 
+def auprc_score(true_vals, pred_vals):
+    """
+    Computes the auPRC in the last dimension of `arr1` and `arr2`. `arr1` and
+    `arr2` must be the same shape. For example, if they are both A x B x L
+    arrays, then the auPRC of corresponding L-arrays will be computed and
+    returned in an A x B array. `true_vals` should contain binary values; any
+    values other than 0 or 1 will be ignored when computing auPRC. `pred_vals`
+    should contain prediction values in the range [0, 1]. The behavior of this
+    function is meant to match `sklearn.metrics.average_precision_score` in its
+    calculation with regards to thresholding. If there are no true positives,
+    the auPRC returned will be NaN.
+    """
+    # Sort true and predicted values in descending order
+    sorted_inds = np.flip(np.argsort(pred_vals, axis=-1), axis=-1)
+    pred_vals = np.take_along_axis(pred_vals, sorted_inds, -1)
+    true_vals = np.take_along_axis(true_vals, sorted_inds, -1)
+
+    # Compute the indices where a run of identical predicted values stops
+    # In `thresh_inds`, there is a 1 wherever a run ends, and 0 otherwise
+    diff = np.diff(pred_vals, axis=-1)
+    diff[diff != 0] = 1  # Assign 1 to every nonzero diff
+    thresh_inds = np.pad(
+        diff, ([(0, 0)] * (diff.ndim - 1)) + [(0, 1)], constant_values=1
+    ).astype(int)
+    thresh_mask = thresh_inds == 1
+
+    # Compute true positives and false positives at each location; this will
+    # eventually be subsetted to only the threshold indices
+    # Assign a weight of zero wherever the true value is not binary
+    weight_mask = (true_vals == 0) | (true_vals == 1)
+    true_pos = np.cumsum(true_vals * weight_mask, axis=-1)
+    false_pos = np.cumsum((1 - true_vals) * weight_mask, axis=-1)
+
+    # Compute precision array, but keep 0s wherever there isn't a threshold
+    # index
+    precis_denom = true_pos + false_pos
+    precis = np.divide(
+        true_pos, precis_denom,
+        out=np.zeros(true_pos.shape),
+        where=((precis_denom != 0) & thresh_mask)
+    )
+
+    # Compute recall array, but if there are no true positives, it's nan for the
+    # entire subarray
+    recall_denom = true_pos[..., -1:]
+    recall = np.divide(
+        true_pos, recall_denom,
+        out=np.full(true_pos.shape, np.nan),
+        where=(recall_denom != 0)
+    )
+
+    # Concatenate an initial value of 0 for recall; adjust `thresh_inds`, too
+    thresh_inds = np.pad(
+        thresh_inds, ([(0, 0)] * (thresh_inds.ndim - 1)) + [(1, 0)],
+        constant_values=1
+    )
+    recall = np.pad(
+        recall, ([(0, 0)] * (recall.ndim - 1)) + [(1, 0)], constant_values=0
+    )
+    # Concatenate an initial value of 1 for precision; technically, this initial
+    # value won't be used for auPRC calculation, but it will be easier for later
+    # steps to do this anyway
+    precis = np.pad(
+        precis, ([(0, 0)] * (precis.ndim - 1)) + [(1, 0)], constant_values=1
+    )
+
+    # We want the difference of the recalls, but only in buckets marked by
+    # threshold indices; since the number of buckets can be different for each
+    # subarray, we create a set of bucketed recalls and precisions for each
+    # Each entry in `thresh_buckets` is an index mapping the thresholds to
+    # consecutive buckets
+    thresh_buckets = np.cumsum(thresh_inds, axis=-1) - 1
+    # Set unused buckets to -1; won't happen if there are no unused buckets
+    thresh_buckets[thresh_inds == 0] = -1
+    # Place the recall values into the buckets into consecutive locations; any
+    # unused recall values get placed (and may clobber) the last index
+    recall_buckets = np.zeros_like(recall)
+    np.put_along_axis(recall_buckets, thresh_buckets, recall, -1)
+    # Do the same for precision
+    precis_buckets = np.zeros_like(precis)
+    np.put_along_axis(precis_buckets, thresh_buckets, precis, -1)
+
+    # Compute the auPRC/average precision by computing the recall bucket diffs
+    # and weighting by bucketed precision; note that when `precis` was made,
+    # it is 0 wherever there is no threshold index, so all locations in
+    # `precis_buckets` which aren't used (even the last index) have a 0
+    recall_diffs = np.diff(recall_buckets, axis=-1)
+    return np.sum(recall_diffs * precis_buckets[..., 1:], axis=-1)
+
+
 @performance_ex.capture
 def binned_profile_auprc(
     true_prof_counts, pred_prof_probs, true_total_counts, auprc_bin_sizes,
-    auprc_min_pos_prob, auprc_min_pos_count, auprc_max_neg_prob
+    auprc_min_pos_prob, auprc_min_pos_count, auprc_max_neg_prob,
+    batch_size=50000
 ):
     """
     Binarizes the profile and computes auPRC for different bin sizes.
@@ -118,6 +242,7 @@ def binned_profile_auprc(
             profiles for each task and strand, as RAW PROBABILITIES
         `true_total_counts`: a B x T x 2 array, containing the true total counts
             for each task and strand
+        `batch_size`: performs computation in a batch size of this many samples
     Returns an N x T x Z x 4 array containing the auPRCs for each sample and
     task, where each auPRC is computed across both strands (pooled), for each
     sample and task. This is done for every bin size in `auprc_bin_sizes`. For
@@ -141,44 +266,40 @@ def binned_profile_auprc(
     pred_prof_probs_flat = np.reshape(pred_prof_probs, new_shape)
   
     result = np.zeros((num_samples, num_tasks, len(auprc_bin_sizes), 4))
-    for i in range(num_samples):
-        for j in range(num_tasks):
-            # Pool the strands together for the sample/task
-            true_prob_slice = true_prof_probs_flat[i, j]
-            true_count_slice = true_prof_counts_flat[i, j]
-            pred_prob_slice = pred_prof_probs_flat[i, j]
+    for i, bin_size in enumerate(auprc_bin_sizes):
+        # Bin the values, taking the maximum for each bin
+        true_prob_bins = bin_array_max(true_prof_probs_flat, bin_size)
+        true_count_bins = bin_array_max(true_prof_counts_flat, bin_size)
+        pred_prob_bins = bin_array_max(pred_prof_probs_flat, bin_size)
 
-            for k, bin_size in enumerate(auprc_bin_sizes):
-                # Bin the values, taking the maximum for each bin
-                true_prob_bins = bin_array_max(true_prob_slice, bin_size)
-                true_count_bins = bin_array_max(true_count_slice, bin_size)
-                pred_prob_bins = bin_array_max(pred_prob_slice, bin_size)
+        for start in range(0, num_samples, batch_size):
+            end = start + batch_size
+            true_prob_batch = true_prob_bins[start:end, :, :]
+            true_count_batch = true_count_bins[start:end, :, :]
+            pred_prob_batch = pred_prob_bins[start:end, :, :]
 
-                # Filter for the positives and negatives
-                # A bin is positive if the maximum count inside it is at least
-                # a minimum number of reads, and the maximum probability inside
-                # is at least the minimum fraction of total reads
-                pos_mask = (true_count_bins >= auprc_min_pos_count) & \
-                    (true_prob_bins >= auprc_min_pos_prob)
-                neg_mask = true_prob_bins <= auprc_max_neg_prob
+            # Filter for the positives and negatives
+            # A bin is positive if the maximum count inside it is at least a
+            # minimum number of reads, and the maximum probability inside is at
+            # least the minimum fraction of total reads
+            pos_mask = (true_count_batch >= auprc_min_pos_count) & \
+                (true_prob_batch >= auprc_min_pos_prob)
+            neg_mask = true_prob_batch <= auprc_max_neg_prob
 
-                num_pos, num_neg = np.sum(pos_mask), np.sum(neg_mask)
-                num_ambi = true_prob_bins.size - num_pos - num_neg
+            num_pos = np.sum(pos_mask, axis=-1)
+            num_neg = np.sum(neg_mask, axis=-1)
+            num_ambi = true_prob_bins.shape[-1] - num_pos - num_neg
 
-                if num_pos:
-                    true_vals = np.concatenate([
-                        np.ones(num_pos), np.zeros(num_neg)
-                    ])
-                    pred_vals = np.concatenate([
-                        pred_prob_bins[pos_mask], pred_prob_bins[neg_mask]
-                    ])
-                    auprc = sklearn.metrics.average_precision_score(
-                        true_vals, pred_vals
-                    )
-                else:
-                    auprc = np.nan
+            true_vals = np.full(true_count_batch.shape, -1)
+            true_vals[pos_mask] = 1
+            true_vals[neg_mask] = 0
+            pred_vals = pred_prob_batch
+            auprc = auprc_score(true_vals, pred_vals)
 
-                result[i, j, k] = [auprc, num_pos, num_ambi, num_neg]
+            result[start:end, :, i, 0] = auprc
+            result[start:end, :, i, 1] = num_pos
+            result[start:end, :, i, 2] = num_ambi
+            result[start:end, :, i, 3] = num_neg
 
     return result
 
@@ -411,19 +532,12 @@ def compute_performance_metrics(
         print("%ds" % (end - start).seconds)
 
     # Jensen-Shannon divergence
-    # Normalize true profile (counts) into probabilities, keeping 1s when the
-    # sum is 0; upon renormalization, this would avoid dividing by 0
+    # The true profile counts will be renormalized during JSD computation
     if print_updates:
         print("\t\tComputing JSD... ", end="", flush=True)
         start = datetime.now()
-    true_counts_dim = np.expand_dims(true_counts, axis=2)
-    true_prof_probs = np.divide(
-        true_profs, true_counts_dim,
-        out=np.ones_like(true_profs),
-        where=(true_counts_dim != 0)
-    )
     pred_prof_probs = np.exp(log_pred_profs)
-    jsd = profile_jsd(true_prof_probs, pred_prof_probs)
+    jsd = profile_jsd(true_profs, pred_prof_probs)
     if print_updates:
         end = datetime.now()
         print("%ds" % (end - start).seconds)
@@ -558,112 +672,3 @@ def log_performance_metrics(
         print(("\t%s count MSE: " % prefix) + ", ".join(
             [("%6.6f" % x) for x in mse_tot]
         ))
-
-
-@performance_ex.command
-def test1():
-    from datetime import datetime
-    np.random.seed(20191110)
-    num_corrs, corr_len = 500, 1000
-    arr1 = np.random.randint(100, size=(num_corrs, corr_len))
-    arr2 = np.random.randint(100, size=(num_corrs, corr_len))
-
-    print("Pearson correlation:")
-    pears_scipy = np.empty(num_corrs)
-    a = datetime.now()
-    for i in range(num_corrs):
-        pears_scipy[i] = scipy.stats.pearsonr(arr1[i], arr2[i])[0]
-    b = datetime.now()
-    print("\tTime to compute (Scipy): %ds" % (b - a).seconds)
-
-    a = datetime.now()
-    pears_vect = pearson_corr(arr1, arr2) 
-    b = datetime.now()
-    print("\tTime to compute (vectorized): %ds" % (b - a).seconds)
-    print("\tSame result? %s" % np.allclose(pears_vect, pears_scipy))
-
-    print("Spearman correlation:")
-    spear_scipy = np.empty(num_corrs)
-    a = datetime.now()
-    for i in range(num_corrs):
-        spear_scipy[i] = scipy.stats.spearmanr(arr1[i], arr2[i])[0]
-    b = datetime.now()
-    print("\tTime to compute (Scipy): %ds" % (b - a).seconds)
-
-    a = datetime.now()
-    spear_vect = spearman_corr(arr1, arr2) 
-    b = datetime.now()
-    print("\tTime to compute (vectorized): %ds" % (b - a).seconds)
-    print("\tSame result? %s" % np.allclose(spear_vect, spear_scipy))
-
-
-@performance_ex.command
-def test2():
-    from datetime import datetime
-    np.random.seed(20191110)
-    num_samples, num_tasks, profile_len = 500, 4, 1000
-    bin_sizes = [1, 4, 10]
-    arr1 = np.random.randint(100, size=(num_samples, num_tasks, profile_len, 2))
-    arr2 = np.random.randint(100, size=(num_samples, num_tasks, profile_len, 2))
-    arr3 = np.random.randint(100, size=(num_samples, num_tasks, 2))
-    arr4 = np.random.randint(100, size=(num_samples, num_tasks, 2))
-
-    print("Testing binned correlation and MSE...")
-    a = datetime.now()
-    # Combine the profile length and strand dimensions (i.e. pool strands)
-    new_shape = (num_samples, num_tasks, -1)
-    arr1_flat, arr2_flat = np.reshape(arr1, new_shape), np.reshape(arr2, new_shape)
-    pears_scipy = np.empty((num_samples, num_tasks, len(bin_sizes)))
-    spear_scipy = np.empty((num_samples, num_tasks, len(bin_sizes)))
-    mse_scipy = np.empty((num_samples, num_tasks, len(bin_sizes)))
-    for i in range(num_samples):
-        for j in range(num_tasks):
-            slice1, slice2 = arr1_flat[i, j], arr2_flat[i, j]
-            for k, bin_size in enumerate(bin_sizes):
-                # Bin the values, taking the maximum for each bin
-                bins1 = bin_array_max(slice1, bin_size)
-                bins2 = bin_array_max(slice2, bin_size)
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    # Ignore warnings when computing correlations, to avoid
-                    # warnings when input is constant
-                    pears_scipy[i, j, k] = scipy.stats.pearsonr(bins1, bins2)[0]
-                    spear_scipy[i, j, k] = scipy.stats.spearmanr(bins1, bins2)[0]
-                    mse_scipy[i, j, k] = sklearn.metrics.mean_squared_error(bins1, bins2)
-    b = datetime.now()
-    print("\tTime to compute (SciPy): %ds" % (b - a).seconds)
-    
-    a = datetime.now()
-    pears_vec, spear_vec, mse_vec = binned_count_corr_mse(arr1, arr2, [1, 4, 10])
-    b = datetime.now()
-    print("\tTime to compute (vectorized): %ds" % (b - a).seconds)
-
-    print("\tSame Pearson result? %s" % np.allclose(pears_vec, pears_scipy))
-    print("\tSame Spearman result? %s" % np.allclose(spear_vec, spear_scipy))
-    print("\tSame MSE result? %s" % np.allclose(mse_vec, mse_scipy))
-
-
-    print("Testing total correlation and MSE...")
-    a = datetime.now()
-    # Reshape inputs to be T x N * 2 (i.e. pool samples and strands)
-    arr3_swap = np.reshape(np.swapaxes(arr3, 0, 1), (num_tasks, -1))
-    arr4_swap = np.reshape(np.swapaxes(arr4, 0, 1), (num_tasks, -1))
-
-    # For each task, compute the correlations/MSE
-    pears_scipy, spear_scipy, mse_scipy = np.empty(num_tasks), np.empty(num_tasks), np.empty(num_tasks)
-    for j in range(num_tasks):
-        arr3_list, arr4_list = arr3_swap[j], arr4_swap[j]
-        pears_scipy[j] = scipy.stats.pearsonr(arr3_list, arr4_list)[0]
-        spear_scipy[j] = scipy.stats.spearmanr(arr3_list, arr4_list)[0]
-        mse_scipy[j] = sklearn.metrics.mean_squared_error(arr3_list, arr4_list)
-    b = datetime.now()
-    print("\tTime to compute (SciPy): %ds" % (b - a).seconds)
-    
-    a = datetime.now()
-    pears_vec, spear_vec, mse_vec = total_count_corr_mse(arr3, arr4)
-    b = datetime.now()
-    print("\tTime to compute (vectorized): %ds" % (b - a).seconds)
-
-    print("\tSame Pearson result? %s" % np.allclose(pears_vec, pears_scipy))
-    print("\tSame Spearman result? %s" % np.allclose(spear_vec, spear_scipy))
-    print("\tSame MSE result? %s" % np.allclose(mse_vec, mse_scipy))

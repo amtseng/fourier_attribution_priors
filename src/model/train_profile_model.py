@@ -11,7 +11,7 @@ import feature.make_profile_dataset as make_profile_dataset
 
 MODEL_DIR = os.environ.get(
     "MODEL_DIR",
-    "/users/amtseng/att_priors/models/trained_profile_models/"
+    "/users/amtseng/att_priors/models/trained_profile_models/misc/"
 )
 
 train_ex = sacred.Experiment("train", ingredients=[

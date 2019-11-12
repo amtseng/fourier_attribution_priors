@@ -25,7 +25,6 @@ def multinomial_log_probs(category_log_probs, trials, query_counts):
     """
     # Multinomial probability = n! / (x1!...xk!) * p1^x1 * ... pk^xk
     # Log prob = log(n!) - (log(x1!) ... + log(xk!)) + x1log(p1) ... + xklog(pk)
-
     log_n_fact = torch.lgamma(trials.float() + 1)
     log_counts_fact = torch.lgamma(query_counts.float() + 1)
     log_counts_fact_sum = torch.sum(log_counts_fact, dim=-1)
