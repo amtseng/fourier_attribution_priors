@@ -15,18 +15,18 @@ def multinomial_log_probs(category_log_probs, trials, query_counts):
             e) of seeing each of the N classes/categories
         `trials`: a D-tensor containing the total number of trials for each
             distribution (can be different numbers)
-        `query_counts`: a D x N tensor containing the observed count of eac
+        `query_counts`: a D x N tensor containing the observed count of each
             category in each distribution; the probability is computed for these
             observations
     Returns a D-tensor containing the log probabilities (base e) of each
-    observed query with its corresponding distribution.
-    Note that D can be replaced with any shape (i.e. only the last dimension is
-    reduced).
+    observed query with its corresponding distribution. Note that D can be
+    replaced with any shape (i.e. only the last dimension is reduced).
     """
     # Multinomial probability = n! / (x1!...xk!) * p1^x1 * ... pk^xk
     # Log prob = log(n!) - (log(x1!) ... + log(xk!)) + x1log(p1) ... + xklog(pk)
-    log_n_fact = torch.lgamma(trials.float() + 1)
-    log_counts_fact = torch.lgamma(query_counts.float() + 1)
+    trials, query_counts = trials.float(), query_counts.float()
+    log_n_fact = torch.lgamma(trials + 1)
+    log_counts_fact = torch.lgamma(query_counts + 1)
     log_counts_fact_sum = torch.sum(log_counts_fact, dim=-1)
     log_prob_pows = category_log_probs * query_counts  # Elementwise sum
     log_prob_pows_sum = torch.sum(log_prob_pows, dim=-1)
@@ -161,24 +161,28 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         """
         Computes a forward pass on a batch of sequences.
         Arguments:
-            `inputs_seqs`: a B x D x I tensor, where B is the batch size, D is
-                the number of channels in the input, and I is the input sequence
-                length
-            `cont_profs`: a B x T x 2 x O tensor, where T is the number of
+            `inputs_seqs`: a B x I x D tensor, where B is the batch size, I is
+                the input sequence length, and D is the number of input channels
+            `cont_profs`: a B x T x O x 2 tensor, where T is the number of
                 tasks, and O is the output sequence length
         Returns the predicted profiles (unnormalized logits) for each task (both
-        plus and minus strands) (a B x T x 2 x O tensor), and the predicted log
+        plus and minus strands) (a B x T x O x 2 tensor), and the predicted log
         counts (base e) for each task (both plus and minus strands)
         (a B x T x 2) tensor.
         """
         batch_size = input_seqs.size(0)
-        input_length = input_seqs.size(2)
+        input_length = input_seqs.size(1)
         assert input_length == self.input_length
         num_tasks = cont_profs.size(1)
         assert num_tasks == self.num_tasks
-        profile_length = cont_profs.size(3)
+        profile_length = cont_profs.size(2)
         assert profile_length == self.profile_length
-        
+
+        # PyTorch prefers convolutions to be channel first, so transpose the
+        # input and control profiles
+        input_seqs = input_seqs.transpose(1, 2)  # Shape: B x D x I
+        cont_profs = cont_profs.transpose(2, 3)  # Shape: B x T x 2 x O
+
         # 1. Perform dilated convolutions on the input, each layer's input is
         # the sum of all previous layers' outputs
         dil_conv_out_list = None
@@ -216,6 +220,8 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         # prof_first_conv_out, and a pair of controls
         prof_one_conv_out = self.prof_one_conv(prof_with_cont)
         prof_pred = prof_one_conv_out.view(batch_size, num_tasks, 2, -1)
+        # Transpose profile predictions to get B x T x O x 2
+        prof_pred = prof_pred.transpose(2, 3)
         
         # Branch B: read count prediction
         # B1. Global average pooling across the output of dilated convolutions
@@ -252,11 +258,11 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         distribution defined by the predicted profile count probabilities. The
         count loss is a simple mean squared error on the log counts.
         Arguments:
-            `true_profs`: a B x T x 2 x O tensor containing true UNnormalized
+            `true_profs`: a B x T x O x 2 tensor containing true UNnormalized
                 profile values, where B is the batch size, T is the number of
                 tasks, and O is the profile length; the sum of a profile gives
                 the raw read count for that task
-            `logit_pred_profs`: a B x T x 2 x O tensor containing the predicted
+            `logit_pred_profs`: a B x T x O x 2 tensor containing the predicted
                 profile _logits_
             `log_pred_counts`: a B x T x 2 tensor containing the predicted log
                 read counts (base e)
@@ -268,36 +274,46 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         batch_size = true_profs.size(0)
         num_tasks = true_profs.size(1)
 
-        # Reshape the inputs to be flat along the tasks dimension
-        true_profs = true_profs.view(batch_size, num_tasks * 2, -1)
-        logit_pred_profs = logit_pred_profs.view(batch_size, num_tasks * 2, -1)
-        log_pred_counts = log_pred_counts.view(batch_size, num_tasks * 2)
-
         # Add the profiles together to get the raw counts
-        true_counts = torch.sum(true_profs, dim=2)
+        true_counts = torch.sum(true_profs, dim=2)  # Shape: B x T x 2
+
+        # Transpose and reshape the profile inputs from B x T x O x 2 to
+        # B x 2T x O; all metrics will be computed for each individual profile,
+        # then averaged across pooled tasks/strands, then across the batch
+        true_profs = true_profs.transpose(2, 3).reshape(
+            batch_size, num_tasks * 2, -1
+        )
+        logit_pred_profs = logit_pred_profs.transpose(2, 3).reshape(
+            batch_size, num_tasks * 2, -1
+        )
+        # Reshape the counts from B x T x 2 to B x 2T
+        true_counts = true_counts.view(batch_size, num_tasks * 2)
+        log_pred_counts = log_pred_counts.view(batch_size, num_tasks * 2)
 
         # 1. Profile loss
         # Compute the log probabilities based on multinomial distributions,
         # each one is based on predicted probabilities, one for each track
 
-        # Convert logits to log probabilities
-        log_pred_profs = profile_logits_to_log_probs(logit_pred_profs)
+        # Convert logits to log probabilities (along the O dimension)
+        log_pred_profs = profile_logits_to_log_probs(logit_pred_profs, axis=2)
 
         # Compute probability of seeing true profile under distribution of log
         # predicted probs
-        log_probs = multinomial_log_probs(
+        neg_log_likelihood = -multinomial_log_probs(
             log_pred_profs, true_counts, true_profs
-        )
-        batch_prof_loss = torch.mean(-log_probs, dim=1)  # Average across tasks
-        prof_loss = torch.mean(batch_prof_loss)  # Average across batch
+        )  # Shape: B x 2T
+        # Average across tasks/strands, and then across the batch
+        batch_prof_loss = torch.mean(neg_log_likelihood, dim=1)
+        prof_loss = torch.mean(batch_prof_loss)
 
         # 2. Counts loss
         # Mean squared error on the log counts (with 1 added for stability)
         log_true_counts = torch.log(true_counts + 1)
-
         mse = self.mse_loss(log_pred_counts, log_true_counts)
-        batch_count_loss = torch.mean(mse, dim=1)  # Average acorss tasks
-        count_loss = torch.mean(batch_count_loss)  # Average across batch
+
+        # Average across tasks/strands, and then across the batch
+        batch_count_loss = torch.mean(mse, dim=1)
+        count_loss = torch.mean(batch_count_loss)
 
         return prof_loss + (count_loss_weight * count_loss)
 
@@ -352,21 +368,22 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         return (pos_weight * pos_loss_mean) + neg_loss_mean
 
 
-def profile_logits_to_log_probs(logit_pred_profs):
+def profile_logits_to_log_probs(logit_pred_profs, axis=2):
     """
     Converts the model's predicted profile logits into normalized probabilities
-    via a softmax.
+    via a softmax on the specified dimension (defaults to axis=2).
     Arguments:
-        `logit_pred_profs`: a B x T x O x 2 tensor/array containing the
-            predicted profile logits
-    Returns a B x T x O x 2 tensor/array containing the predicted profiles as
-    log probabilities. If the input is a tensor, the output will be a tensor. If
-    the input is a NumPy array, the output will be a NumPy array. Note that the
-    reason why this function returns log probabilities rather than raw
-    probabilities is for numerical stability.
+        `logit_pred_profs`: a tensor/array containing the predicted profile
+            logits
+    Returns a tensor/array of the same shape, containing the predicted profiles
+    as log probabilities by doing a log softmax on the specified dimension. If
+    the input is a tensor, the output will be a tensor. If the input is a NumPy
+    array, the output will be a NumPy array. Note that the  reason why this
+    function returns log probabilities rather than raw probabilities is for
+    numerical stability.
     """
     if type(logit_pred_profs) is np.ndarray:
         return logit_pred_profs - \
-            scipy.special.logsumexp(logit_pred_profs, axis=2, keepdims=True)
+            scipy.special.logsumexp(logit_pred_profs, axis=axis, keepdims=True)
     else:
-        return torch.nn.functional.log_softmax(logit_pred_profs, dim=2)
+        return torch.log_softmax(logit_pred_profs, dim=axis)

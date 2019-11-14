@@ -134,10 +134,10 @@ def model_loss(
     Computes the loss for the model.
     Arguments:
         `model`: the model being trained
-        `true_profs`: a B x T x 2 x O tensor, where B is the batch size, T is
+        `true_profs`: a B x T x O x 2 tensor, where B is the batch size, T is
             the number of tasks, and O is the length of the output profiles;
             this contains true profile read counts (unnormalized)
-        `log_pred_profs`: a B x T x 2 x O tensor, consisting of the output
+        `log_pred_profs`: a B x T x O x 2 tensor, consisting of the output
             profile predictions as logits
         `log_pred_counts`: a B x T x 2 tensor consisting of the log counts
             predictions
@@ -228,9 +228,6 @@ def run_epoch(
         tf_profs = profiles[:, :num_tasks, :, :]
         cont_profs = profiles[:, num_tasks:, :, :]
         
-        # Make channels come first in input
-        input_seqs = torch.transpose(input_seqs, 1, 2)
-        
         if att_prior_loss_weight > 0:
             input_seqs.requires_grad = True  # Set gradient required
             logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
@@ -240,7 +237,6 @@ def run_epoch(
                 retain_graph=True
             )  # Sum gradients across strands and tasks
             input_grads = input_seqs.grad * input_seqs  # Gradient * input
-            input_grads = input_grads.transpose(1, 2)  # B x I x D
             status = util.place_tensor(torch.tensor(statuses))
             status[status > 0] = 1  # Whenever not negative example, set to 1
             input_seqs.requires_grad = False  # Reset gradient required
@@ -269,16 +265,13 @@ def run_epoch(
             logit_pred_profs_np = logit_pred_profs.detach().cpu().numpy()
             log_pred_counts_np = log_pred_counts.detach().cpu().numpy()
             true_profs_np = tf_profs.detach().cpu().numpy()
-            true_counts = np.sum(true_profs_np, axis=3)
+            true_counts = np.sum(true_profs_np, axis=2)
 
             num_in_batch = true_counts.shape[0]
-            # Transpose the profiles from N x T x 2 x O to N x T x O x 2
-            logit_pred_profs_np = np.swapaxes(logit_pred_profs_np, 2, 3)
-            true_profs_np = np.swapaxes(true_profs_np, 2, 3)
           
             # Turn logit profile predictions into log probabilities
             log_pred_profs = profile_models.profile_logits_to_log_probs(
-                logit_pred_profs_np
+                logit_pred_profs_np, axis=2
             )
 
             # Fill in the batch data/outputs into the preallocated arrays

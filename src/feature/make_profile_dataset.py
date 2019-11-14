@@ -125,7 +125,7 @@ class CoordsToVals:
         
     def _get_ndarray(self, coords):
         """
-        From an iterable of coordinates, retrieves a 2D NumPy array of
+        From an iterable of coordinates, retrieves a 2D B x L NumPy array of
         corresponding profile values. Note that all coordinate intervals need
         to be of the same length. 
         """
@@ -387,7 +387,7 @@ class CoordDataset(torch.utils.data.IterableDataset):
     def get_batch(self, index):
         """
         Returns a batch, which consists of an B x L x 4 NumPy array of 1-hot
-        encoded sequence, an B x T x 2 x L NumPy array of profiles, and a 1D
+        encoded sequence, an B x T x L x 2 NumPy array of profiles, and a 1D
         length-N NumPy array of statuses. The profile for each of the T tasks in
         `coords_to_vals_list` is returned, in the same order as in this list,
         and each task contains 2 tracks, for the plus and minus strand,
@@ -404,7 +404,7 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
         # Map this batch of coordinates to the associated profiles
         profiles = np.stack([
-            np.stack([ctv_1(coords), ctv_2(coords)], axis=1) \
+            np.stack([ctv_1(coords), ctv_2(coords)], axis=2) \
             for ctv_1, ctv_2 in self.coords_to_vals_list
         ], axis=1)
 
