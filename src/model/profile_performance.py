@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.special
+import scipy.ndimage
 import sacred
 from datetime import datetime
 
@@ -7,6 +8,12 @@ performance_ex = sacred.Experiment("performance")
 
 @performance_ex.config
 def config():
+    # Smoothing parameter before computing profile Jensen-Shannon distances
+    # Specifies width of the Gaussian kernel, which will have this standard
+    # deviation; the total window size is 1 + (2 * sigma); specify 0 for no
+    # smoothing
+    jsd_smooth_kernel_sigma = 3
+
     # Bin sizes to try for count correlation
     prof_count_corr_bin_sizes = [1, 4, 10]
 
@@ -122,7 +129,8 @@ def jensen_shannon_distance(probs1, probs2):
     return 0.5 * (_kl_divergence(probs1, mid) + _kl_divergence(probs2, mid))
 
 
-def profile_jsd(true_prof_probs, pred_prof_probs):
+@performance_ex.capture
+def profile_jsd(true_prof_probs, pred_prof_probs, jsd_smooth_kernel_sigma):
     """
     Computes the Jensen-Shannon divergence of the true and predicted profiles
     given their raw probabilities or counts. The inputs will be renormalized
@@ -139,10 +147,23 @@ def profile_jsd(true_prof_probs, pred_prof_probs):
     Returns an N x T array, where the JSD is computed across the profiles and
     averaged between the strands, for each sample/task.
     """
-    # Transpose to N x T x 2 x O, so JSD is computed along last dimension
+    # Transpose to N x T x 2 x O, as JSD is computed along last dimension
     true_prof_swap = np.swapaxes(true_prof_probs, 2, 3)
     pred_prof_swap = np.swapaxes(pred_prof_probs, 2, 3)
-    jsd = jensen_shannon_distance(true_prof_swap, pred_prof_swap)
+
+    # Smooth the profiles
+    if jsd_smooth_kernel_sigma == 0:
+        sigma, truncate = 1, 0
+    else:
+        sigma, truncate = jsd_smooth_kernel_sigma, 1
+    true_prof_smooth = scipy.ndimage.gaussian_filter1d(
+        true_prof_swap, sigma, axis=-1, truncate=truncate
+    )
+    pred_prof_smooth = scipy.ndimage.gaussian_filter1d(
+        pred_prof_swap, sigma, axis=-1, truncate=truncate
+    )
+
+    jsd = jensen_shannon_distance(true_prof_smooth, pred_prof_smooth)
     return np.mean(jsd, axis=-1)  # Average over strands
 
 
