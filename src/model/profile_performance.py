@@ -450,25 +450,25 @@ def mean_squared_error(arr1, arr2):
 
 
 @performance_ex.capture
-def binned_count_corr_mse(
-    log_true_prof_counts, log_pred_prof_counts, prof_count_corr_bin_sizes,
+def binned_profile_corr_mse(
+    true_prof_probs, pred_prof_probs, prof_count_corr_bin_sizes,
     batch_size=50000
 ):
     """
     Returns the correlations of the true and predicted PROFILE counts (i.e.
     per base or per bin).
     Arguments:
-        `log_true_prof_counts`: a N x T x O x 2 array, containing the true
-            profile LOG COUNTS for each task and strand
-        `log_pred_prof_counts`: a N x T x O x 2 array, containing the predicted
-            profile LOG COUNTS for each task and strand
+        `true_prof_probs`: a N x T x O x 2 array, containing the true profile
+            RAW PROBABILITIES for each task and strand
+        `pred_prof_probs`: a N x T x O x 2 array, containing the true profile
+            RAW PROBABILITIES for each task and strand
         `batch_size`: performs computation in a batch size of this many samples
     Returns 3 N x T x Z arrays, containing the Pearson correlation, Spearman
     correlation, and mean squared error of the profile predictions (as log
     counts). Correlations/MSE are computed for each sample/task, for each bin
     size in `prof_count_corr_bin_sizes` (strands are pooled together).
     """
-    num_samples, num_tasks = log_true_prof_counts.shape[:2]
+    num_samples, num_tasks = true_prof_probs.shape[:2]
     num_bin_sizes = len(prof_count_corr_bin_sizes)
     pears = np.zeros((num_samples, num_tasks, num_bin_sizes))
     spear = np.zeros((num_samples, num_tasks, num_bin_sizes))
@@ -476,17 +476,19 @@ def binned_count_corr_mse(
 
     # Combine the profile length and strand dimensions (i.e. pool strands)
     new_shape = (num_samples, num_tasks, -1)
-    log_true_prof_counts_flat = np.reshape(log_true_prof_counts, new_shape)
-    log_pred_prof_counts_flat = np.reshape(log_pred_prof_counts, new_shape)
+    true_prof_probs_flat = np.reshape(true_prof_probs, new_shape)
+    pred_prof_probs_flat = np.reshape(pred_prof_probs, new_shape)
 
     for i, bin_size in enumerate(prof_count_corr_bin_sizes):
-        true_count_binned = bin_array_max(log_true_prof_counts_flat, bin_size)
-        pred_count_binned = bin_array_max(log_pred_prof_counts_flat, bin_size)
+        true_prob_binned = bin_array_max(true_prof_probs_flat, bin_size)
+        pred_prob_binned = bin_array_max(pred_prof_probs_flat, bin_size)
         for start in range(0, num_samples, batch_size):
             end = start + batch_size
-            true_batch = true_count_binned[start:end, :, :]
-            pred_batch = pred_count_binned[start:end, :, :]
+            true_batch = true_prob_binned[start:end, :, :]
+            pred_batch = pred_prob_binned[start:end, :, :]
+
             pears[start:end, :, i] = pearson_corr(true_batch, pred_batch)
+            x = spearman_corr(true_batch, pred_batch)
             spear[start:end, :, i] = spearman_corr(true_batch, pred_batch)
             mse[start:end, :, i] = mean_squared_error(true_batch, pred_batch)
 
@@ -572,7 +574,7 @@ def compute_performance_metrics(
     """
     # Multinomial NLL
     if print_updates:
-        print("\t\tComputing NLL... ", end="", flush=True)
+        print("\t\tComputing profile NLL... ", end="", flush=True)
         start = datetime.now()
     nll = profile_multinomial_nll(
         true_profs, log_pred_profs, true_counts
@@ -584,7 +586,7 @@ def compute_performance_metrics(
     # Jensen-Shannon divergence
     # The true profile counts will be renormalized during JSD computation
     if print_updates:
-        print("\t\tComputing JSD... ", end="", flush=True)
+        print("\t\tComputing profile JSD... ", end="", flush=True)
         start = datetime.now()
     pred_prof_probs = np.exp(log_pred_profs)
     jsd = profile_jsd(true_profs, pred_prof_probs)
@@ -593,7 +595,7 @@ def compute_performance_metrics(
         print("%ds" % (end - start).seconds)
 
     if print_updates:
-        print("\t\tComputing auPRC... ", end="", flush=True)
+        print("\t\tComputing profile auPRC... ", end="", flush=True)
         start = datetime.now()
     # Binned auPRC
     auprc = binned_profile_auprc(true_profs, pred_prof_probs, true_counts)
@@ -601,22 +603,24 @@ def compute_performance_metrics(
         end = datetime.now()
         print("%ds" % (end - start).seconds)
 
-    del pred_prof_probs  # Garbage collect
-
     if print_updates:
-        print("\t\tComputing correlations/MSE (binned)... ", end="", flush=True)
+        print("\t\tComputing profile correlations/MSE... ", end="", flush=True)
         start = datetime.now()
     # Binned profile count correlations/MSE
-    log_true_profs = np.log(true_profs + 1)
-    pears_bin, spear_bin, mse_bin = binned_count_corr_mse(
-        log_true_profs, log_pred_profs
+    true_prof_sum = np.sum(true_profs, axis=2, keepdims=True)
+    true_prof_probs = np.divide(
+        true_profs, true_prof_sum, out=np.zeros_like(true_profs),
+        where=(true_prof_sum != 0)
+    )
+    pears_bin, spear_bin, mse_bin = binned_profile_corr_mse(
+        true_prof_probs, pred_prof_probs
     )
     if print_updates:
         end = datetime.now()
         print("%ds" % (end - start).seconds)
 
     if print_updates:
-        print("\t\tComputing correlations/MSE (total)... ", end="", flush=True)
+        print("\t\tComputing count correlations/MSE... ", end="", flush=True)
         start = datetime.now()
     # Total count correlations/MSE
     log_true_counts = np.log(true_counts + 1)

@@ -7,6 +7,11 @@ import model.profile_performance as profile_performance
 import model.profile_models as profile_models
 from datetime import datetime
 import warnings
+import sacred
+
+test_ex = sacred.Experiment("test", ingredients=[
+    profile_performance.performance_ex
+])
 
 def test_max_binning():
     np.random.seed(20191110)
@@ -218,7 +223,7 @@ def test_vectorized_corr_mse_2():
     print("\tTime to compute (SciPy): %ds" % (b - a).seconds)
     
     a = datetime.now()
-    pears_vec, spear_vec, mse_vec = profile_performance.binned_count_corr_mse(
+    pears_vec, spear_vec, mse_vec = profile_performance.binned_profile_corr_mse(
         arr1, arr2, bin_sizes
     )
     b = datetime.now()
@@ -304,10 +309,97 @@ def test_vectorized_auprc():
     print("\tSame result? %s" % np.allclose(auprc_scipy, auprc_vec))
 
 
-if __name__ == "__main__":
+class FakeLogger:
+    def log_scalar(self, a, b):
+        pass
+
+
+@test_ex.capture
+def test_all_metrics():
+    np.random.seed(20191110)
+    batch_size, num_tasks, prof_len = 50, 2, 1000
+
+    # Make some random true profiles that have some "peaks"
+    true_profs = np.empty((batch_size, num_tasks, prof_len, 2))
+    ran = np.arange(prof_len)
+    for i in range(batch_size):
+        for j in range(num_tasks):
+            pos_peak = (prof_len / 2) - np.random.randint(50)
+            pos_sigma = np.random.random() * 5
+            pos_prof = np.exp(-((ran - pos_peak) ** 2) / (2 * (pos_sigma ** 2)))
+            neg_peak = (prof_len / 2) + np.random.randint(50)
+            neg_sigma = np.random.random() * 5
+            neg_prof = np.exp(-((ran - neg_peak) ** 2) / (2 * (neg_sigma ** 2)))
+            count = np.random.randint(50, 500)
+            true_profs[i, j, :, 0] = neg_prof / np.sum(neg_prof) * count
+            true_profs[i, j, :, 1] = pos_prof / np.sum(pos_prof) * count
+    true_profs = np.nan_to_num(true_profs)  # NaN to 0
+    true_counts = np.sum(true_profs, axis=2)
+
+    _run = FakeLogger()
+    epsilon = 1e-50  # The smaller this is, the better Spearman correlation is
+    
+    # Make some "perfect" predicted profiles, which are identical to truth
+    print("Testing all metrics on some perfect predictions...")
+    pred_profs = true_profs
+    pred_prof_probs = pred_profs / np.sum(pred_profs, axis=2, keepdims=True)
+    pred_prof_probs = np.nan_to_num(pred_prof_probs)
+    log_pred_profs = np.log(pred_prof_probs + epsilon)
+    pred_counts = true_counts
+    log_pred_counts = np.log(pred_counts + 1)
+   
+    metrics = profile_performance.compute_performance_metrics(
+        true_profs, log_pred_profs, true_counts, log_pred_counts
+    )
+    profile_performance.log_performance_metrics(
+        metrics, "Perfect", _run
+    )
+
+    # Make some "good" predicted profiles by adding Gaussian noise to true
+    print("Testing all metrics on some good predictions...")
+    pred_profs = np.abs(true_profs + (np.random.randn(*true_profs.shape) * 3))
+    pred_prof_probs = pred_profs / np.sum(pred_profs, axis=2, keepdims=True)
+    log_pred_profs = np.log(pred_prof_probs + epsilon)
+    pred_counts = np.abs(
+        true_counts + (np.random.randn(*true_counts.shape) * 10)
+    )
+    log_pred_counts = np.log(pred_counts + 1)
+    
+    metrics = profile_performance.compute_performance_metrics(
+        true_profs, log_pred_profs, true_counts, log_pred_counts
+    )
+    profile_performance.log_performance_metrics(
+        metrics, "Good", _run
+    )
+
+    # Make some "bad" predicted profiles which are just Gaussian noise
+    print("Testing all metrics on some bad predictions...")
+    pred_profs = np.abs(np.random.randn(*true_profs.shape) * 3)
+    pred_prof_probs = pred_profs / np.sum(pred_profs, axis=2, keepdims=True)
+    log_pred_profs = np.log(pred_prof_probs + epsilon)
+    pred_counts = np.abs(np.random.randint(200, size=true_counts.shape))
+    log_pred_counts = np.log(pred_counts + 1)
+
+    metrics = profile_performance.compute_performance_metrics(
+        true_profs, log_pred_profs, true_counts, log_pred_counts
+    )
+    profile_performance.log_performance_metrics(
+        metrics, "Bad", _run
+    )
+    print(
+        "Warning: note that profile Spearman correlation is not so high, " +\
+        "even in the perfect case. This is because while the true profile " +\
+        "has 0 probability (or close to it) in most places, the predicted " +\
+        "profile will never have exactly 0 probability due to the logits. "
+    )
+
+
+@test_ex.automain
+def main():
     test_max_binning()
     test_vectorized_multinomial_nll()
     test_vectorized_jsd()
     test_vectorized_corr_mse_1()
     test_vectorized_corr_mse_2()
     test_vectorized_auprc()
+    test_all_metrics()
