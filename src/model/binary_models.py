@@ -8,7 +8,7 @@ class BinaryTFBindingPredictor(torch.nn.Module):
     def __init__(
         self, input_length, input_depth, num_conv_layers, conv_filter_sizes,
         conv_stride, conv_depths, max_pool_size, max_pool_stride, num_fc_layers,
-        fc_sizes, num_outputs, batch_norm, conv_drop_rate, fc_drop_rate
+        fc_sizes, num_tasks, batch_norm, conv_drop_rate, fc_drop_rate
     ):
         """
         Creates an binary TF binding site predictor from a DNA sequence.
@@ -30,7 +30,7 @@ class BinaryTFBindingPredictor(torch.nn.Module):
                 convolution/pooling
             `fc_sizes`: number of nodes in each fully connected layer; must have
                 `num_fc` entries
-            `num_outputs`: number of tasks the network outputs
+            `num_tasks`: number of tasks the network outputs
             `batch_norm`: whether or not to use batch norm after each
                 convolutional and fully connected layer
             `conv_drop_rate`: dropout rate for convolutional layers
@@ -119,7 +119,7 @@ class BinaryTFBindingPredictor(torch.nn.Module):
             self.fc_layers.append(torch.nn.Dropout(fc_drop_rate))
 
         # Map last fully connected layer to final outputs
-        self.out_map_fc = torch.nn.Linear(fc_sizes[-1], num_outputs)
+        self.out_map_fc = torch.nn.Linear(fc_sizes[-1], num_tasks)
 
         self.sigmoid = torch.nn.Sigmoid()
 
@@ -130,16 +130,21 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         """
         Computes a forward pass on a batch of sequences.
         Arguments:
-            `inputs_seqs`: a B x D x L tensor, where B is the batch size, D is
-                the number of channels in the input, and L is the sequence
-                length
+            `inputs_seqs`: a B x L x D tensor, where B is the batch size, L is
+                the sequence length, and D is the number of channels in the
+                input
         Returns the probabilities of each output (i.e. output values passed
         through a sigmoid). Note that the probabilities are returned in the
-        order according to the input sequences.
+        order according to the input sequences. The tensor returned is B x T,
+        where T is the number of tasks
         """
         batch_size = input_seqs.size(0)
-        input_depth = input_seqs.size(1)
-        input_length = input_seqs.size(2)
+        input_length = input_seqs.size(1)
+        input_depth = input_seqs.size(2)
+
+        # PyTorch prefers convolutions to be channel first, so transpose the
+        # input
+        input_seqs = input_seqs.transpose(1, 2)  # Shape: B x D x L
 
         # Run through convolutions, activations, and batch norm
         x = input_seqs

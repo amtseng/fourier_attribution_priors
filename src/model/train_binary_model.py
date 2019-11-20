@@ -11,7 +11,7 @@ import feature.make_binary_dataset as make_binary_dataset
 
 MODEL_DIR = os.environ.get(
     "MODEL_DIR",
-    "/users/amtseng/att_priors/models/trained_binary_models/"
+    "/users/amtseng/att_priors/models/trained_binary_models/misc/"
 )
 
 train_ex = sacred.Experiment("train", ingredients=[
@@ -49,7 +49,7 @@ def config(dataset):
     fc_sizes = [50, 15]
 
     # Number of outputs to predict
-    num_outputs = 4
+    num_tasks = 4
 
     # Whether to average the positive and negative correctness losses
     avg_class_loss = True
@@ -97,6 +97,12 @@ def config(dataset):
     input_depth = dataset["input_depth"]
     
     # Imported from make_binary_dataset
+    batch_size = dataset["batch_size"]
+
+    # Imported from make_binary_dataset
+    revcomp = dataset["revcomp"]
+
+    # Imported from make_binary_dataset
     val_neg_downsample = dataset["negative_stride"]
 
 
@@ -104,7 +110,7 @@ def config(dataset):
 def create_model(
     input_length, input_depth, num_conv_layers, conv_filter_sizes, conv_stride,
     conv_depths, max_pool_size, max_pool_stride, num_fc_layers, fc_sizes,
-    num_outputs, batch_norm, conv_drop_rate, fc_drop_rate
+    num_tasks, batch_norm, conv_drop_rate, fc_drop_rate
 ):
     """
     Creates a binary model using the configuration above.
@@ -120,7 +126,7 @@ def create_model(
         max_pool_stride=max_pool_stride,
         num_fc_layers=num_fc_layers,
         fc_sizes=fc_sizes,
-        num_outputs=num_outputs,
+        num_tasks=num_tasks,
         batch_norm=batch_norm,
         conv_drop_rate=conv_drop_rate,
         fc_drop_rate=fc_drop_rate
@@ -165,142 +171,113 @@ def model_loss(
 
 
 @train_ex.capture
-def train_epoch(train_loader, model, optimizer, att_prior_loss_weight):
+def run_epoch(
+    data_loader, mode, model, num_tasks, att_prior_loss_weight, batch_size,
+    revcomp, optimizer=None, return_data=False
+):
     """
-    Runs the data from the training loader once through the model, and performs
-    backpropagation. Returns a list of losses for the batches, a list of
-    correctness losses specifically for the batches, and a list of attribution
-    prior losses specifically for the batches. If the attribution prior loss is
-    not computed, then the list will have all 0s.
+    Runs the data from the data loader once through the model, to train,
+    validate, or predict.
+    Arguments:
+        `data_loader`: an instantiated `DataLoader` instance that gives batches
+            of data; each batch must yield the input sequences and the output
+            values
+        `mode`: one of "train", "eval"; if "train", run the epoch and perform
+            backpropagation; if "eval", only do evaluation
+        `model`: the current PyTorch model being trained/evaluated
+        `optimizer`: an instantiated PyTorch optimizer, for training mode
+        `return_data`: if specified, returns the following as NumPy arrays:
+            true binding values, predicted binding values
+    Returns a list of losses for the batches, a list of correction losses
+    specifically for the batches, and a list of attribution prior losses
+    specifically for the batches. If the attribution prior loss is not computed,
+    then the list will have all 0s. If `return_data` is True, then more things
+    will be returned after these.
     """
-    train_loader.dataset.on_epoch_start()  # Set-up the epoch
-    num_batches = len(train_loader.dataset)
+    assert mode in ("train", "eval")
+    if mode == "train":
+        assert optimizer is not None
+    else:
+        assert optimizer is None 
+
+    data_loader.dataset.on_epoch_start()  # Set-up the epoch
+    num_batches = len(data_loader.dataset)
     t_iter = tqdm.tqdm(
-        train_loader, total=num_batches, desc="\tTraining loss: ---"
+        data_loader, total=num_batches, desc="\tLoss: ---"
     )
 
-    model.train()  # Switch to training mode
-    torch.set_grad_enabled(True)
+    if mode == "train":
+        model.train()  # Switch to training mode
+        torch.set_grad_enabled(True)
 
     batch_losses, corr_losses, att_losses = [], [], []
+    if return_data:
+        # Allocate empty NumPy arrays to hold the results
+        num_samples_exp = num_batches * batch_size
+        num_samples_exp *= 2 if revcomp else 1
+        # Real number of samples can be smaller because of partial last batch
+        all_true_vals = np.empty((num_samples_exp, num_tasks))
+        all_pred_vals = np.empty((num_samples_exp, num_tasks))
+        num_samples_seen = 0  # Real number of samples seen
+
     for input_seqs, output_vals in t_iter:
         batch_size = output_vals.shape[0]
-        input_seqs_t = util.place_tensor(torch.tensor(input_seqs)).float()
-        output_vals_t = util.place_tensor(torch.tensor(output_vals)).float()
+        input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
+        output_vals_np = output_vals  # Save a NumPy copy
+        output_vals = util.place_tensor(torch.tensor(output_vals)).float()
         
-        # Make channels come first in input
-        input_seqs_t = torch.transpose(input_seqs_t, 1, 2)
-
         if att_prior_loss_weight > 0:
-            input_seqs_t.requires_grad = True  # Set gradient required
-            probs = model(input_seqs_t)
+            input_seqs.requires_grad = True  # Set gradient required
+            probs = model(input_seqs)
             model.zero_grad()  # Clear gradients
             probs.backward(
                 util.place_tensor(torch.ones(probs.size())),
                 retain_graph=True
             )  # Sum gradients across tasks
-            input_grads = input_seqs_t.grad * input_seqs_t  # Gradient * input
-            input_grads = input_grads.transpose(1, 2)  # B x I x D
+            input_grads = input_seqs.grad * input_seqs  # Gradient * input
             status = -np.ones(batch_size)
-            status[np.any(output_vals == 1, axis=1)] = 1
-            status[np.all(output_vals == 0, axis=1)] = 0
-            input_seqs_t.requires_grad = False  # Reset gradient required
+            status[np.any(output_vals_np == 1, axis=1)] = 1
+            status[np.all(output_vals_np == 0, axis=1)] = 0
+            status = util.place_tensor(torch.tensor(status))
+            input_seqs.requires_grad = False  # Reset gradient required
         else:
-            probs = model(input_seqs_t)
+            probs = model(input_seqs)
             status, input_grads = None, None
 
-        optimizer.zero_grad()  # Clear gradients from last batch
         loss, (corr_loss, att_loss) = model_loss(
-            model, output_vals_t, probs, status, input_grads
+            model, output_vals, probs, status, input_grads
         )
-        loss.backward()  # Compute gradient
-        optimizer.step()  # Update weights through backprop
         
+        if mode == "train":
+            optimizer.zero_grad()  # Clear gradients from last batch
+            loss.backward()  # Compute gradient
+            optimizer.step()  # Update weights through backprop
+
         batch_losses.append(loss.item())
         corr_losses.append(corr_loss.item())
         att_losses.append(att_loss.item())
         t_iter.set_description(
-            "\tTraining loss: %6.10f" % loss.item()
+            "\tLoss: %6.4f" % loss.item()
         )
 
-    return batch_losses, corr_losses, att_losses
-
-
-@train_ex.capture
-def eval_epoch(val_loader, model, att_prior_loss_weight, return_data=False):
-    """
-    Runs the data from the validation loader once through the model, and
-    saves the output results. Returns a list of losses for the batches, a list
-    of correctness losses specifically for the batches, a list of attribution
-    prior losses specifically for the batches, a NumPy array of predicted
-    probabilities, and a NumPy array of true values. If the attribution prior
-    loss is not computed, then the list will have all 0s. If `return_data` is
-    True, also returns the true values and predicted values as NumPy arrays.
-    """ 
-    val_loader.dataset.on_epoch_start()  # Set-up the epoch
-    num_batches = len(val_loader.dataset)
-    t_iter = tqdm.tqdm(
-        val_loader, total=num_batches, desc="\tValidation loss: ---"
-    )
-
-    model.eval()  # Switch to evaluation mode
-
-    batch_losses, corr_losses, att_losses = [], [], []
-    if return_data:
-        true_val_arr, pred_val_arr = [], []
-    for input_seqs, output_vals in t_iter:
-        batch_size = output_vals.shape[0]
         if return_data:
-            true_val_arr.append(output_vals)
+            true_vals = output_vals.detach().cpu().numpy()
+            pred_vals = probs.detach().cpu().numpy()
+            num_in_batch = true_vals.shape[0]
 
-        input_seqs_t = util.place_tensor(torch.tensor(input_seqs)).float()
-        output_vals_t = util.place_tensor(torch.tensor(output_vals)).float()
-
-        # Make channels come first in input
-        input_seqs_t = torch.transpose(input_seqs_t, 1, 2)
-
-        if att_prior_loss_weight > 0:
-            torch.set_grad_enabled(True)  # We actually do need grad here
-            input_seqs_t.requires_grad = True  # Set gradient required
-            probs = model(input_seqs_t)
-            if return_data:
-                pred_val_arr.append(probs.detach().to("cpu").numpy())
-            model.zero_grad()  # Clear gradients
-            probs.backward(
-                util.place_tensor(torch.ones(probs.size())),
-                retain_graph=True
-            )  # Sum gradients across tasks
-            input_grads = input_seqs_t.grad * input_seqs_t  # Gradient * input
-            input_grads = input_grads.transpose(1, 2)  # B x I x D
-            status = -np.ones(batch_size)
-            status[np.any(output_vals == 1, axis=1)] = 1
-            status[np.all(output_vals == 0, axis=1)] = 0
-            input_seqs_t.requires_grad = False  # Reset gradient required
-            torch.set_grad_enabled(False)  # Don't need grad to compute loss
-        else:
-            torch.set_grad_enabled(False)
-            model.zero_grad()  # Clear gradients from last batch
-            probs = model(input_seqs_t)
-            if return_data:
-                pred_val_arr.append(probs.detach().to("cpu").numpy())
-            status, input_grads = None, None
-
-        loss, (corr_loss, att_loss) = model_loss(
-            model, output_vals_t, probs, status, input_grads
-        )
-
-        batch_losses.append(loss.item())
-        corr_losses.append(corr_loss.item())
-        att_losses.append(att_loss.item())
-
-        t_iter.set_description(
-            "\tValidation loss: %6.10f" % loss.item()
-        )
+            # Fill in the batch data/outputs into the preallocated arrays
+            start, end = num_samples_seen, num_samples_seen + num_in_batch
+            all_true_vals[start:end] = true_vals
+            all_pred_vals[start:end] = pred_vals
+            num_samples_seen += num_in_batch
 
     if return_data:
-        pred_vals = np.concatenate(pred_val_arr)
-        true_vals = np.concatenate(true_val_arr)
-        return batch_losses, corr_losses, att_losses, pred_vals, true_vals
+        # Truncate the saved data to the proper size, based on how many
+        # samples actually seen
+        all_true_vals = all_true_vals[:num_samples_seen]
+        all_pred_vals = all_pred_vals[:num_samples_seen]
+        return batch_losses, corr_losses, att_losses, all_true_vals,\
+            all_pred_vals
     else:
         return batch_losses, corr_losses, att_losses
 
@@ -340,8 +317,8 @@ def train(
         if torch.cuda.is_available:
             torch.cuda.empty_cache()  # Clear GPU memory
 
-        t_batch_losses, t_corr_losses, t_att_losses = train_epoch(
-            train_loader, model, optimizer
+        t_batch_losses, t_corr_losses, t_att_losses = run_epoch(
+            train_loader, "train", model, optimizer=optimizer
         )
         train_epoch_loss = np.nanmean(t_batch_losses)
         print(
@@ -354,8 +331,8 @@ def train(
         _run.log_scalar("train_corr_losses", t_corr_losses)
         _run.log_scalar("train_att_losses", t_att_losses)
 
-        v_batch_losses, v_corr_losses, v_att_losses = eval_epoch(
-            val_loader, model
+        v_batch_losses, v_corr_losses, v_att_losses = run_epoch(
+            val_loader, "eval", model
         )
         val_epoch_loss = np.nanmean(v_batch_losses)
         print(
@@ -367,7 +344,7 @@ def train(
         _run.log_scalar("val_batch_losses", v_batch_losses)
         _run.log_scalar("val_corr_losses", v_corr_losses)
         _run.log_scalar("val_att_losses", v_att_losses)
- 
+
         # Save trained model for the epoch
         savepath = os.path.join(
             output_dir, "model_ckpt_epoch_%d.pt" % (epoch + 1)
@@ -393,14 +370,13 @@ def train(
 
     # Compute evaluation metrics and log them
     print("Computing final validation metrics:")
-    _, _, _, pred_vals, true_vals = eval_epoch(
-        val_loader, model, return_data=True
+    _, _, _, true_vals, pred_vals = run_epoch(
+        val_loader, "eval", model, return_data=True
     )
-    metrics = binary_performance.compute_evaluation_metrics(
+    metrics = binary_performance.compute_performance_metrics(
         true_vals, pred_vals, val_neg_downsample
     )
-    binary_performance.log_evaluation_metrics(metrics, _run)
-
+    binary_performance.log_performance_metrics(metrics, _run)
 
 
 @train_ex.command

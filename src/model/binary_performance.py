@@ -82,7 +82,7 @@ def precision_recall_scores(precis, recall, thresholds, pos_thresh=0.5):
     return precis[thresh_ind], recall[thresh_ind]
 
 
-def compute_evaluation_metrics(true_values, pred_values, val_neg_downsample):
+def compute_performance_metrics(true_values, pred_values, val_neg_downsample):
     """
     For the given parallel 2D NumPy arrays containing true and predicted values
     (shape num_samples x num_tasks), computes various evaluation metrics and
@@ -151,45 +151,46 @@ def compute_evaluation_metrics(true_values, pred_values, val_neg_downsample):
     return dict(zip(labels, metrics))
 
 
-def log_evaluation_metrics(metric_dict, _run, print_log=True):
+def log_performance_metrics(metrics, _run, print_log=True):
     """
-    Given the metrics dictionary returned by `compute_performance`, logs them
-    to a Sacred logging object (`_run`), and optionally prints out a log.
+    Given the metrics dictionary returned by `compute_performance_metrics`, logs
+    them to a Sacred logging object (`_run`), and optionally prints out a log.
     """
-    print("\tAccuracy: " + ", ".join(
-        [("%6.2f%%" % (acc * 100)) for acc in metric_dict["acc"]]
-    ))
-    print("\tPOS accuracy: " + ", ".join(
-        [("%6.2f%%" % (acc * 100)) for acc in metric_dict["pos_acc"]]
-    ))
-    print("\tNEG accuracy: " + ", ".join(
-        [("%6.2f%%" % (acc * 100)) for acc in metric_dict["neg_acc"]]
-    ))
-    print("\tauROC: " + ", ".join(
-        [("%6.10f" % auroc) for auroc in metric_dict["auroc"]]
-    ))
-    print("\tPrecision: " + ", ".join(
-        [("%6.10f" % preci) for preci in metric_dict["pre"]]
-    ))
-    print("\tRecall: " + ", ".join(
-        [("%6.10f" % recall) for recall in metric_dict["rec"]]
-    ))
-    print("\tauPRC: " + ", ".join(
-        [("%6.10f" % auprc) for auprc in metric_dict["auprc"]]
-    ))
-    print("\tCorrected precision: " + ", ".join(
-        [("%6.10f" % preci) for preci in metric_dict["c_pre"]]
-    ))
-    print("\tCorrected auPRC: " + ", ".join(
-        [("%6.10f" % auprc) for auprc in metric_dict["c_auprc"]]
-    ))
+    _run.log_scalar("acc", metrics["acc"])
+    _run.log_scalar("pos_acc", metrics["pos_acc"])
+    _run.log_scalar("neg_acc", metrics["neg_acc"])
+    _run.log_scalar("auroc", metrics["auroc"])
+    _run.log_scalar("precis", metrics["pre"])
+    _run.log_scalar("recall", metrics["rec"])
+    _run.log_scalar("auprc", metrics["auprc"])
+    _run.log_scalar("corr_precis", metrics["c_pre"])
+    _run.log_scalar("corr_auprc", metrics["c_auprc"])
 
-    _run.log_scalar("val_acc", metric_dict["acc"])
-    _run.log_scalar("val_pos_acc", metric_dict["pos_acc"])
-    _run.log_scalar("val_neg_acc", metric_dict["neg_acc"])
-    _run.log_scalar("val_auroc", metric_dict["auroc"])
-    _run.log_scalar("val_precis", metric_dict["pre"])
-    _run.log_scalar("val_recall", metric_dict["rec"])
-    _run.log_scalar("val_auprc", metric_dict["auprc"])
-    _run.log_scalar("val_corr_precis", metric_dict["c_pre"])
-    _run.log_scalar("val_corr_auprc", metric_dict["c_auprc"])
+    if print_log:
+        print("\tAccuracy: " + ", ".join(
+            [("%6.2f%%" % (acc * 100)) for acc in metrics["acc"]]
+        ))
+        print("\tPOS accuracy: " + ", ".join(
+            [("%6.2f%%" % (acc * 100)) for acc in metrics["pos_acc"]]
+        ))
+        print("\tNEG accuracy: " + ", ".join(
+            [("%6.2f%%" % (acc * 100)) for acc in metrics["neg_acc"]]
+        ))
+        print("\tauROC: " + ", ".join(
+            [("%6.6f" % auroc) for auroc in metrics["auroc"]]
+        ))
+        print("\tPrecision: " + ", ".join(
+            [("%6.6f" % preci) for preci in metrics["pre"]]
+        ))
+        print("\tRecall: " + ", ".join(
+            [("%6.6f" % recall) for recall in metrics["rec"]]
+        ))
+        print("\tauPRC: " + ", ".join(
+            [("%6.6f" % auprc) for auprc in metrics["auprc"]]
+        ))
+        print("\tCorrected precision: " + ", ".join(
+            [("%6.6f" % preci) for preci in metrics["c_pre"]]
+        ))
+        print("\tCorrected auPRC: " + ", ".join(
+            [("%6.6f" % auprc) for auprc in metrics["c_auprc"]]
+        )) 

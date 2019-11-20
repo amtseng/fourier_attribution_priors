@@ -19,7 +19,7 @@ def config():
     output_ignore_value = states_map["A"]
 
     # Path to reference genome FASTA
-    reference_fasta = "/users/amtseng/genomes/hg19.fasta"
+    reference_fasta = "/users/amtseng/genomes/hg38.fasta"
 
     # For each input sequence in the raw data, center it and pad to this length 
     input_length = 1000

@@ -1,11 +1,12 @@
-import model.train_binary_model as train
+import model.train_profile_model as train_profile_model
+import model.train_binary_model as train_binary_model
 import numpy as np
 import random
 import os
 import click
 import sacred
-import torch
 import json
+import multiprocessing
 
 hyperparam_ex = sacred.Experiment("hyperparam")
 
@@ -45,28 +46,26 @@ def deep_update(parent, update):
             parent[key] = val
 
 
-@hyperparam_ex.capture
-def launch_training(hparams, base_config, train_file, val_file):
-    deep_update(hparams, base_config)
-    config_updates = hparams
-
-    # Hoist up the train subdictionary to the root, since that's the command
-    # that's being run
-    train_dict = config_updates["train"]
-    del config_updates["train"]
-    deep_update(config_updates, train_dict)
-
-    train.train_ex.run("run_training", config_updates=config_updates)
+def run_train_command(config_updates, model_type):
+    if model_type.lower() == "profile":
+        train_profile_model.train_ex.run(
+            "run_training", config_updates=config_updates
+        )
+    else:
+        train_binary_model.train_ex.run(
+            "run_training", config_updates=config_updates
+        )
 
 
 @click.command()
 @click.option(
-    "--train-file", "-t", nargs=1, required=True,
-    help="Path to gzipped training BED"
+    "--model-type", "-t",
+    type=click.Choice(["binary", "profile"], case_sensitive=False),
+    help="Whether to train a binary model or profile model"
 )
 @click.option(
-    "--val-file", "-v", nargs=1, required=True,
-    help="Path to gzipped validation BED"
+    "--file-specs-json-path", "-f", nargs=1, required=True,
+    help="Path to file containing paths for training data"
 )
 @click.option(
     "--num-runs", "-n", nargs=1, default=50, help="Number of runs for tuning"
@@ -78,18 +77,33 @@ def launch_training(hparams, base_config, train_file, val_file):
 @click.argument(
     "config_cli_tokens", nargs=-1
 )
-def main(train_file, val_file, num_runs, config_json_path, config_cli_tokens):
+def main(
+    model_type, file_specs_json_path, num_runs, config_json_path,
+    config_cli_tokens
+):
+    """
+    Launches hyperparameter tuning for a given number of runs. The model trained can be binary or profile. Below is a description of the parameters.
+
+    Type:
+        Either "binary" or "profile", which is the type of model to train.
+
+    File specs JSON:
+        For a binary model, this JSON should have two keys: `train_bed_path` and `val_bed_path`, referring to the paths to the BED file with training coordinates/values and the BED file with validation coordinates/values, respectively. For a profile model, this JSON should have the following keys: `train_peak_beds`, which is a list of paths to BED files containing the peak and summit locations (one per task); `val_peak_beds`, a list of paths to similar BED files, but for validation instead of training; and `prof_bigwigs`, a list of paired paths, where each pair has the profile BigWig tracks for the two strands, and the first half the list is profiles to predict, and the second half is control profiles
+
+    Config JSON:
+        An optional JSON that specifies additional configuration options to override existing Sacred parameters or sampled hyperparameters; dataset parameters should be under the `dataset` key, and training parameters should be under the `train` key
+
+    Additional commandline arguments are also accepted as additional configuration options. For example, specify `dataset.batch_size=64` or `train.num_epochs=20`. These arguments will override existing Sacred parameters, sampled hyperparameters, or anything in the config JSON.
+    """
     def sample_hyperparams():
         np.random.seed()  # Re-seed to random number
         hparams = {
             "train": {
-                "fc_drop_rate": uniformly_sample_dist(-1, -3, log_scale=True),
-                "learning_rate": uniformly_sample_dist(-1, -6, log_scale=True),
-                "att_prior_loss_weight": uniformly_sample_dist(-1, 1, log_scale=True),
-                "att_prior_pos_weight": uniformly_sample_dist(-2, 2, log_scale=True)
+                "learning_rate": uniformly_sample_dist(-3, -1, log_scale=True)
+                # "counts_loss_weight": uniformly_sample_dist(-2, 2, log_scale=True)
             },
             "dataset": {
-                "batch_size": uniformly_sample_list([32, 64, 128, 256])
+                "batch_size": uniformly_sample_list([32, 64, 128])
             }
         }
         return hparams
@@ -105,14 +119,22 @@ def main(train_file, val_file, num_runs, config_json_path, config_cli_tokens):
         model_dir = os.environ["MODEL_DIR"]
         print("Using %s as directory to store model outputs" % model_dir)
 
+    # Load in the configuration options supplied as a file
     if config_json_path:
         with open(config_json_path, "r") as f:
-            config_json = json.load(f)
+            base_config = json.load(f)
     else:
-        config_json = {}
+        base_config = {}
 
-    # Add in the configuration options supplied to commandline
-    base_config = config_json
+    # Extract the file paths specified, and put them into the base config at
+    # the top level; these will be filled into the training command by Sacred
+    with open(file_specs_json_path, "r") as f:
+        file_specs_json = json.load(f)
+    for key in file_specs_json:
+        base_config[key] = file_specs_json[key]
+
+    # Add in the configuration options supplied to commandline, overwriting the
+    # options in the config JSON (or file paths JSON) if needed
     for token in config_cli_tokens:
         key, val = token.split("=", 1)
         try:
@@ -127,15 +149,26 @@ def main(train_file, val_file, num_runs, config_json_path, config_cli_tokens):
             d = d[key_piece]
         d[key_pieces[-1]] = val
 
-    # Add in these arguments for the run_training command in train
-    base_config["train"]["train_bed_path"] = train_file
-    base_config["train"]["val_bed_path"] = val_file
-
     for i in range(num_runs):
-        launch_training(
-            sample_hyperparams(), base_config, train_file, val_file
+        # Sample hyperparameters and add in the base config dict (i.e. options
+        # specified by the config JSON, file specs JSON, or commandline)
+        # Anything in base config overrides sample hyperparameters
+        config_updates = sample_hyperparams()
+        deep_update(config_updates, base_config)
+
+        # Up until this point, all training parameters/options were under the
+        # "train" subdictionary; now hoist up the subdictionary to the root,
+        # since that's the command that's being run
+        train_dict = config_updates["train"]
+        del config_updates["train"]
+        deep_update(config_updates, train_dict)
+
+        proc = multiprocessing.Process(
+            target=run_train_command, args=(config_updates, model_type)
         )
-    
+        proc.start()
+        proc.join()  # Wait until the training process stops
+
         
 if __name__ == "__main__":
     main()   
