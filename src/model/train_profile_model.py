@@ -55,6 +55,10 @@ def config(dataset):
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
     att_prior_loss_weight = 1.0
 
+    # Annealing factor for attribution prior loss weight: e^(-factor * epoch);
+    # set to 0 for no annealing
+    att_prior_loss_weight_anneal = 0.5
+
     # Smoothing amount for gradients before computing attribution prior loss;
     # Smoothing window size is 1 + (2 * sigma); set to 0 for no smoothing
     att_prior_grad_smooth_sigma = 3
@@ -131,8 +135,9 @@ def create_model(
 @train_ex.capture
 def model_loss(
     model, true_profs, log_pred_profs, log_pred_counts, status, input_grads,
-    counts_loss_weight, att_prior_loss_weight, att_prior_pos_limit,
-    att_prior_pos_weight, att_prior_grad_smooth_sigma, return_loss_parts=False
+    epoch_num, counts_loss_weight, att_prior_loss_weight,
+    att_prior_loss_weight_anneal, att_prior_pos_limit, att_prior_pos_weight,
+    att_prior_grad_smooth_sigma, return_loss_parts=False
 ):
     """
     Computes the loss for the model.
@@ -150,6 +155,7 @@ def model_loss(
         `input_grads`: a B x I x D tensor, where I is the input length and D is
             the input depth; this is the gradient of the output with respect to
             the input, times the input itself
+        `epoch_num`: a 0-indexed integer representing the current epoch
     Returns a scalar Tensor containing the loss for the given batch, as well as
     a pair consisting of the correctness loss and the attribution prior loss.
     If the attribution prior loss is not computed at all, then 0 will be in its
@@ -166,14 +172,16 @@ def model_loss(
         status, input_grads, att_prior_pos_limit, att_prior_pos_weight,
         att_prior_grad_smooth_sigma
     )
-    final_loss = corr_loss + (att_prior_loss_weight * att_prior_loss)
+    weight = att_prior_loss_weight * \
+        np.exp(-att_prior_loss_weight_anneal * epoch_num)
+    final_loss = corr_loss + (weight * att_prior_loss)
     return final_loss, (corr_loss, att_prior_loss)
 
 
 @train_ex.capture
 def run_epoch(
-    data_loader, mode, model, num_tasks, att_prior_loss_weight, batch_size,
-    revcomp, profile_length, optimizer=None, return_data=False
+    data_loader, mode, model, epoch_num, num_tasks, att_prior_loss_weight,
+    batch_size, revcomp, profile_length, optimizer=None, return_data=False
 ):
     """
     Runs the data from the data loader once through the model, to train,
@@ -186,6 +194,7 @@ def run_epoch(
         `mode`: one of "train", "eval"; if "train", run the epoch and perform
             backpropagation; if "eval", only do evaluation
         `model`: the current PyTorch model being trained/evaluated
+        `epoch_num`: 0-indexed integer representing the current epoch
         `optimizer`: an instantiated PyTorch optimizer, for training mode
         `return_data`: if specified, returns the following as NumPy arrays:
             true profile counts, predicted profile log probabilities,
@@ -251,7 +260,7 @@ def run_epoch(
 
         loss, (corr_loss, att_loss) = model_loss(
             model, tf_profs, logit_pred_profs, log_pred_counts, status,
-            input_grads
+            input_grads, epoch_num
         )
         
         if mode == "train":
@@ -343,7 +352,7 @@ def train_model(
             torch.cuda.empty_cache()  # Clear GPU memory
 
         t_batch_losses, t_corr_losses, t_att_losses = run_epoch(
-            train_loader, "train", model, optimizer=optimizer
+            train_loader, "train", model, epoch, optimizer=optimizer
         )
         train_epoch_loss = np.nanmean(t_batch_losses)
         print(
@@ -357,7 +366,7 @@ def train_model(
         _run.log_scalar("train_att_losses", t_att_losses)
 
         v_batch_losses, v_corr_losses, v_att_losses = run_epoch(
-            val_loader, "eval", model
+            val_loader, "eval", model, epoch
         )
         val_epoch_loss = np.nanmean(v_batch_losses)
         print(
@@ -401,7 +410,8 @@ def train_model(
         print("Computing validation metrics, %s:" % prefix)
         _, _, _, log_pred_profs, log_pred_counts, true_profs, true_counts = \
             run_epoch(
-                data_loader, "eval", model, return_data=True
+                data_loader, "eval", model, float("inf"), return_data=True
+                # Don't use attribution prior loss at all
         )
 
         metrics = profile_performance.compute_performance_metrics(
