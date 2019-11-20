@@ -55,6 +55,10 @@ def config(dataset):
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
     att_prior_loss_weight = 1.0
 
+    # Smoothing amount for gradients before computing attribution prior loss;
+    # Smoothing window size is 1 + (2 * sigma); set to 0 for no smoothing
+    att_prior_grad_smooth_sigma = 3
+
     # Maximum frequency integer to consider for a positive attribution prior
     att_prior_pos_limit = 160
 
@@ -128,7 +132,7 @@ def create_model(
 def model_loss(
     model, true_profs, log_pred_profs, log_pred_counts, status, input_grads,
     counts_loss_weight, att_prior_loss_weight, att_prior_pos_limit,
-    att_prior_pos_weight, return_loss_parts=False
+    att_prior_pos_weight, att_prior_grad_smooth_sigma, return_loss_parts=False
 ):
     """
     Computes the loss for the model.
@@ -159,7 +163,8 @@ def model_loss(
         return corr_loss, (corr_loss, torch.zeros(1))
     
     att_prior_loss = model.att_prior_loss(
-        status, input_grads, att_prior_pos_limit, att_prior_pos_weight
+        status, input_grads, att_prior_pos_limit, att_prior_pos_weight,
+        att_prior_grad_smooth_sigma
     )
     final_loss = corr_loss + (att_prior_loss_weight * att_prior_loss)
     return final_loss, (corr_loss, att_prior_loss)

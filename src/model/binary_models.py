@@ -1,7 +1,9 @@
 import torch
 import math
 import numpy as np
-from model.util import place_tensor, sanitize_sacred_arguments
+import scipy.special
+import scipy.ndimage
+from model.util import place_tensor, sanitize_sacred_arguments, smooth_tensor_1d
 
 class BinaryTFBindingPredictor(torch.nn.Module):
 
@@ -121,8 +123,6 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         # Map last fully connected layer to final outputs
         self.out_map_fc = torch.nn.Linear(fc_sizes[-1], num_tasks)
 
-        self.sigmoid = torch.nn.Sigmoid()
-
         self.bce_loss = torch.nn.BCELoss()
 
 
@@ -133,10 +133,9 @@ class BinaryTFBindingPredictor(torch.nn.Module):
             `inputs_seqs`: a B x L x D tensor, where B is the batch size, L is
                 the sequence length, and D is the number of channels in the
                 input
-        Returns the probabilities of each output (i.e. output values passed
-        through a sigmoid). Note that the probabilities are returned in the
-        order according to the input sequences. The tensor returned is B x T,
-        where T is the number of tasks
+        Returns the LOGITS of each input and task as a B x T tensor. Note that
+        the logits are returned in the order according to the input sequences.
+        T is the number of tasks
         """
         batch_size = input_seqs.size(0)
         input_length = input_seqs.size(1)
@@ -167,25 +166,32 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         # Run through last layer to get logits
         logits = self.out_map_fc(fc_output)
 
-        probs = self.sigmoid(logits)
+        return logits
+
         return probs
 
 
-    def correctness_loss(self, true_vals, probs, average_classes=False):
+    def correctness_loss(
+        self, true_vals, logit_pred_vals, average_classes=False
+    ):
         """
         Computes the binary cross-entropy loss.
         Arguments:
-            `true_seqs`: a B x C tensor, where B is the batch size and C is the
+            `true_seqs`: a B x T tensor, where B is the batch size and C is the
                 number of output tasks, containing the true binary values
-            `probs`: a B x C tensor containing the predicted probabilities
+            `logit_pred_vals`: a B x T tensor containing the predicted LOGITS
+                for each output and task
             `average_classes`: if True, compute the loss separately for the
                 positives and the negatives, and return their average; this
                 weights the losses between imbalanced classes more evenly
         Returns a tensor scalar that is the loss for the batch.
         """
-        assert true_vals.size() == probs.size()
+        assert true_vals.size() == logit_pred_vals.size()
         true_vals_flat = torch.flatten(true_vals)
-        probs_flat = torch.flatten(probs)
+        logit_pred_vals_flat = torch.flatten(logit_pred_vals)
+
+        # Convert logits to probabilities
+        probs_flat = binary_logits_to_probs(logit_pred_vals_flat)
 
         if average_classes:
             pos_mask = true_vals_flat == 1
@@ -211,7 +217,10 @@ class BinaryTFBindingPredictor(torch.nn.Module):
             return self.bce_loss(probs_flat, true_vals_flat)
 
 
-    def att_prior_loss(self, status, input_grads, pos_limit, pos_weight):
+    def att_prior_loss(
+        self, status, input_grads, pos_limit, pos_weight,
+        att_prior_grad_smooth_sigma
+    ):
         """
         Computes an attribution prior loss for some given training examples.
         Arguments:
@@ -228,13 +237,19 @@ class BinaryTFBindingPredictor(torch.nn.Module):
                 pi * k / L; k should be less than L / 2
             `pos_weight`: the amount to weight the positive loss by, to give it
                 a similar scale as the negative loss
+            `att_prior_grad_smooth_sigma`: amount to smooth the gradient before
+                computing the loss
         Returns a single scalar Tensor consisting of the attribution loss for
         the batch.
         """
         max_rect_grads = torch.max(self.relu(input_grads), dim=2)[0]
+        # Smooth the gradients
+        max_rect_grads_smooth = smooth_tensor_1d(
+            max_rect_grads, att_prior_grad_smooth_sigma
+        )
 
-        neg_grads = max_rect_grads[status == 0]
-        pos_grads = max_rect_grads[status == 1]
+        neg_grads = max_rect_grads_smooth[status == 0]
+        pos_grads = max_rect_grads_smooth[status == 1]
 
         # Loss for positives
         if pos_grads.nelement():
@@ -260,3 +275,20 @@ class BinaryTFBindingPredictor(torch.nn.Module):
             neg_loss_mean = 0
 
         return (pos_weight * pos_loss_mean) + neg_loss_mean
+
+
+def binary_logits_to_probs(logit_pred_vals):
+    """
+    Converts the model's predicted binary logits into probabilities via a
+    sigmoid on all values.
+    Arguments:
+        `logit_pred_vals`: a tensor/array containing the predicted logits
+    Returns a tensor/array of the same shape, containing the predictions as
+    raw probabilities by doing a sigmoid. If the input is a tensor, the output
+    will be a tensor. If the input is a NumPy array, the output will be a NumPy
+    array.
+    """
+    if type(logit_pred_vals) is np.ndarray:
+        return scipy.special.expit(logit_pred_vals)
+    else:
+        return torch.sigmoid(logit_pred_vals)

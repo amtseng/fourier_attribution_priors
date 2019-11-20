@@ -57,6 +57,10 @@ def config(dataset):
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
     att_prior_loss_weight = 1.0
 
+    # Smoothing amount for gradients before computing attribution prior loss;
+    # Smoothing window size is 1 + (2 * sigma); set to 0 for no smoothing
+    att_prior_grad_smooth_sigma = 3
+
     # Maximum frequency integer to consider for a positive attribution prior
     att_prior_pos_limit = 160
 
@@ -137,17 +141,17 @@ def create_model(
 
 @train_ex.capture
 def model_loss(
-    model, true_vals, probs, status, input_grads, avg_class_loss,
+    model, true_vals, logit_pred_vals, status, input_grads, avg_class_loss,
     att_prior_loss_weight, att_prior_pos_limit, att_prior_pos_weight,
-    return_loss_parts=False
+    att_prior_grad_smooth_sigma, return_loss_parts=False
 ):
     """
     Computes the loss for the model.
     Arguments:
         `model`: the model being trained
-        `true_vals`: a B x C tensor, where B is the batch size and C is the
+        `true_vals`: a B x T tensor, where B is the batch size and T is the
             number of output tasks, containing the true binary values
-        `probs`: a B x C tensor containing the predicted probabilities
+        `logit_pred_vals`: a B x T tensor containing the predicted logits
         `status`: a B-tensor, where B is the batch size; each entry is 1 if that
             that example is to be treated as a positive example, and 0 otherwise
         `input_grads`: a B x L x D tensor, where L is the output length and D is
@@ -158,13 +162,16 @@ def model_loss(
     If the attribution prior loss is not computed at all, then 0 will be in its
     place, instead.
     """
-    corr_loss = model.correctness_loss(true_vals, probs, avg_class_loss)
+    corr_loss = model.correctness_loss(
+        true_vals, logit_pred_vals, avg_class_loss
+    )
    
     if not att_prior_loss_weight:
         return corr_loss, (corr_loss, torch.zeros(1))
     
     att_prior_loss = model.att_prior_loss(
-        status, input_grads, att_prior_pos_limit, att_prior_pos_weight
+        status, input_grads, att_prior_pos_limit, att_prior_pos_weight,
+        att_prior_grad_smooth_sigma
     )
     final_loss = corr_loss + (att_prior_loss_weight * att_prior_loss)
     return final_loss, (corr_loss, att_prior_loss)
@@ -228,10 +235,10 @@ def run_epoch(
         
         if att_prior_loss_weight > 0:
             input_seqs.requires_grad = True  # Set gradient required
-            probs = model(input_seqs)
+            logit_pred_vals = model(input_seqs)
             model.zero_grad()  # Clear gradients
-            probs.backward(
-                util.place_tensor(torch.ones(probs.size())),
+            logit_pred_vals.backward(
+                util.place_tensor(torch.ones(logit_pred_vals.size())),
                 retain_graph=True
             )  # Sum gradients across tasks
             input_grads = input_seqs.grad * input_seqs  # Gradient * input
@@ -241,11 +248,11 @@ def run_epoch(
             status = util.place_tensor(torch.tensor(status))
             input_seqs.requires_grad = False  # Reset gradient required
         else:
-            probs = model(input_seqs)
+            logit_pred_vals = model(input_seqs)
             status, input_grads = None, None
 
         loss, (corr_loss, att_loss) = model_loss(
-            model, output_vals, probs, status, input_grads
+            model, output_vals, logit_pred_vals, status, input_grads
         )
         
         if mode == "train":
@@ -262,7 +269,9 @@ def run_epoch(
 
         if return_data:
             true_vals = output_vals.detach().cpu().numpy()
-            pred_vals = probs.detach().cpu().numpy()
+            logit_pred_vals = logit_pred_vals.detach().cpu().numpy()
+            # Convert logits to probabilities
+            pred_vals = binary_models.binary_logits_to_probs(logit_pred_vals)
             num_in_batch = true_vals.shape[0]
 
             # Fill in the batch data/outputs into the preallocated arrays

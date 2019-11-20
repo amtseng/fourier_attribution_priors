@@ -1,7 +1,8 @@
 import torch
 import math
 import numpy as np
-from model.util import sanitize_sacred_arguments, convolution_size, place_tensor
+from model.util import sanitize_sacred_arguments, convolution_size, \
+    place_tensor, smooth_tensor_1d
 import scipy.special
 
 def multinomial_log_probs(category_log_probs, trials, query_counts):
@@ -150,9 +151,6 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             in_channels=(num_tasks * 4), out_channels=(num_tasks * 2),
             kernel_size=1
         )
-
-        # For converting profile logits to profile log probabilities
-        self.sigmoid = torch.nn.Sigmoid()
 
         # MSE Loss for counts
         self.mse_loss = torch.nn.MSELoss(reduction="none")
@@ -317,7 +315,10 @@ class ProfileTFBindingPredictor(torch.nn.Module):
 
         return prof_loss + (count_loss_weight * count_loss)
 
-    def att_prior_loss(self, status, input_grads, pos_limit, pos_weight):
+    def att_prior_loss(
+        self, status, input_grads, pos_limit, pos_weight,
+        att_prior_grad_smooth_sigma
+    ):
         """
         Computes an attribution prior loss for some given training examples.
         Arguments:
@@ -334,10 +335,16 @@ class ProfileTFBindingPredictor(torch.nn.Module):
                 pi * k / L; k should be less than L / 2
             `pos_weight`: the amount to weight the positive loss by, to give it
                 a similar scale as the negative loss
+            `att_prior_grad_smooth_sigma`: amount to smooth the gradient before
+                computing the loss
         Returns a single scalar Tensor consisting of the attribution loss for
         the batch.
         """
         max_rect_grads = torch.max(self.relu(input_grads), dim=2)[0]
+        # Smooth the gradients
+        max_rect_grads_smooth = smooth_tensor_1d(
+            max_rect_grads, att_prior_grad_smooth_sigma
+        )
 
         neg_grads = max_rect_grads[status == 0]
         pos_grads = max_rect_grads[status == 1]

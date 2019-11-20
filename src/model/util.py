@@ -2,6 +2,8 @@ import torch
 import logging
 import sys
 import sacred
+import scipy.ndimage
+import numpy as np
 
 def place_tensor(tensor):
     """
@@ -122,3 +124,37 @@ def convolution_size(
             size = (strides[i] * (size - 1)) - (2 * padding[i]) + \
                    (dilations[i] * (kernel_sizes[i] - 1)) + 1
     return size
+
+
+def smooth_tensor_1d(input_tensor, smooth_sigma):
+    """
+    Smooths an input tensor along a dimension using a Gaussian filter.
+    Arguments:
+        `input_tensor`: a A x B tensor to smooth along the second dimension
+        `smooth_sigma`: width of the Gaussian to use for smoothing; this is the
+            standard deviation of the Gaussian to use, and the Gaussian will be
+            truncated after 1 sigma (i.e. the smoothing window is
+            1 + (2 * sigma); sigma of 0 means no smoothing
+    Returns an array the same shape as the input tensor, with the dimension of
+    `B` smoothed.
+    """
+    # Generate the kernel
+    if smooth_sigma == 0:
+        sigma, truncate = 1, 0
+    else:
+        sigma, truncate = smooth_sigma, 1
+    base = np.zeros(1 + (2 * sigma))
+    base[sigma] = 1  # Center of window is 1 everywhere else is 0
+    kernel = scipy.ndimage.gaussian_filter(base, sigma=sigma, truncate=truncate)
+    kernel = place_tensor(torch.tensor(kernel))
+
+    # Expand the input and kernel to 3D, with channels of 1
+    # Also make the kernel float-type, as the input is going to be of type float
+    input_tensor = torch.unsqueeze(input_tensor, dim=1)
+    kernel = torch.unsqueeze(torch.unsqueeze(kernel, dim=0), dim=1).float()
+
+    smoothed = torch.nn.functional.conv1d(
+        input_tensor, kernel, padding=sigma
+    )
+
+    return torch.squeeze(smoothed, dim=1)
