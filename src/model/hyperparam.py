@@ -61,7 +61,7 @@ def run_train_command(config_updates, model_type):
 @click.option(
     "--model-type", "-t",
     type=click.Choice(["binary", "profile"], case_sensitive=False),
-    help="Whether to train a binary model or profile model"
+    required=True, help="Whether to train a binary model or profile model"
 )
 @click.option(
     "--file-specs-json-path", "-f", nargs=1, required=True,
@@ -71,6 +71,10 @@ def run_train_command(config_updates, model_type):
     "--num-runs", "-n", nargs=1, default=50, help="Number of runs for tuning"
 )
 @click.option(
+    "--hyperparam-json-path", "-p", nargs=1, default=None,
+    help="Path to JSON file containing specifications for how to tune hyperparameters"
+)
+@click.option(
     "--config-json-path", "-c", nargs=1, default=None,
     help="Path to a config JSON file for Sacred, may override hyperparameters"
 )
@@ -78,8 +82,8 @@ def run_train_command(config_updates, model_type):
     "config_cli_tokens", nargs=-1
 )
 def main(
-    model_type, file_specs_json_path, num_runs, config_json_path,
-    config_cli_tokens
+    model_type, file_specs_json_path, num_runs, hyperparam_json_path,
+    config_json_path, config_cli_tokens
 ):
     """
     Launches hyperparameter tuning for a given number of runs. The model trained can be binary or profile. Below is a description of the parameters.
@@ -88,26 +92,16 @@ def main(
         Either "binary" or "profile", which is the type of model to train.
 
     File specs JSON:
-        For a binary model, this JSON should have two keys: `train_bed_path` and `val_bed_path`, referring to the paths to the BED file with training coordinates/values and the BED file with validation coordinates/values, respectively. For a profile model, this JSON should have the following keys: `train_peak_beds`, which is a list of paths to BED files containing the peak and summit locations (one per task); `val_peak_beds`, a list of paths to similar BED files, but for validation instead of training; and `prof_bigwigs`, a list of paired paths, where each pair has the profile BigWig tracks for the two strands, and the first half the list is profiles to predict, and the second half is control profiles
+        For a binary model, this JSON should have two keys: `train_bed_path` and `val_bed_path`, referring to the paths to the BED file with training coordinates/values and the BED file with validation coordinates/values, respectively. For a profile model, this JSON should have the following keys: `train_peak_beds`, which is a list of paths to BED files containing the peak and summit locations (one per task); `val_peak_beds`, a list of paths to similar BED files, but for validation instead of training; and `prof_bigwigs`, a list of paired paths, where each pair has the profile BigWig tracks for the two strands, and the first half the list is profiles to predict, and the second half is control profiles.
+    
+    Hyperparameters specs JSON:
+        An optional JSON that specifies hyperparameters to tune. The entries should either be under the `train` dictionary or `dataset` dictionary, and each entry can be a distribution sampler or list sampler. For distribution samplers, the entry should map to a pair of values, which are endpoints for random sampling. The `log_scale` argument, if specified as a third value, determines whether sampling should be on a log scale. For list samplers, the entry should map to a list of possible values to choose from. Example: {train: {learning_rate: {dist: [-3, -1, True]}, ...}, dataset: {batch_size: {list: [32, 64, 128]}, ...}}
 
     Config JSON:
-        An optional JSON that specifies additional configuration options to override existing Sacred parameters or sampled hyperparameters; dataset parameters should be under the `dataset` key, and training parameters should be under the `train` key
+        An optional JSON that specifies additional configuration options to override existing Sacred parameters or sampled hyperparameters; dataset parameters should be under the `dataset` key, and training parameters should be under the `train` key.
 
     Additional commandline arguments are also accepted as additional configuration options. For example, specify `dataset.batch_size=64` or `train.num_epochs=20`. These arguments will override existing Sacred parameters, sampled hyperparameters, or anything in the config JSON.
-    """
-    def sample_hyperparams():
-        np.random.seed()  # Re-seed to random number
-        hparams = {
-            "train": {
-                "learning_rate": uniformly_sample_dist(-3, -1, log_scale=True)
-                # "counts_loss_weight": uniformly_sample_dist(-2, 2, log_scale=True)
-            },
-            "dataset": {
-                "batch_size": uniformly_sample_list([32, 64, 128])
-            }
-        }
-        return hparams
-
+    """ 
     if "MODEL_DIR" not in os.environ:
         print("Warning: using default directory to store model outputs")
         print("\tTo change, set the MODEL_DIR environment variable")
@@ -119,19 +113,43 @@ def main(
         model_dir = os.environ["MODEL_DIR"]
         print("Using %s as directory to store model outputs" % model_dir)
 
-    # Load in the configuration options supplied as a file
-    if config_json_path:
-        with open(config_json_path, "r") as f:
-            base_config = json.load(f)
-    else:
-        base_config = {}
-
+    base_config = {}
     # Extract the file paths specified, and put them into the base config at
     # the top level; these will be filled into the training command by Sacred
     with open(file_specs_json_path, "r") as f:
         file_specs_json = json.load(f)
     for key in file_specs_json:
         base_config[key] = file_specs_json[key]
+
+    # Read in the hyperparameter specs dictionary
+    if hyperparam_json_path:
+        with open(hyperparam_json_path, "r") as f:
+            hyperparam_specs = json.load(f)
+    else:
+        hyperparam_specs = {}
+        
+    def sample_hyperparams(hyperparam_specs):
+        # From the hyperparameter specs dictionary, actually perform the
+        # sampling and return a similarly structured dictionary with sampled
+        # values
+        samples = {}
+        for exp_key, param_dict in hyperparam_specs.items():
+            samples[exp_key] = {}
+            for entry_key, entry_dict in param_dict.items():
+                assert ("dist" in entry_dict) + ("list" in entry_dict) == 1
+                if "dist" in entry_dict:
+                    samples[exp_key][entry_key] = \
+                        uniformly_sample_dist(*entry_dict["dist"])
+                else:
+                    samples[exp_key][entry_key] = \
+                        uniformly_sample_list(entry_dict["list"])
+        return samples
+
+    # Load in the configuration options supplied as a file
+    if config_json_path:
+        with open(config_json_path, "r") as f:
+            config = json.load(f)
+        deep_update(base_config, config)
 
     # Add in the configuration options supplied to commandline, overwriting the
     # options in the config JSON (or file paths JSON) if needed
@@ -153,7 +171,7 @@ def main(
         # Sample hyperparameters and add in the base config dict (i.e. options
         # specified by the config JSON, file specs JSON, or commandline)
         # Anything in base config overrides sample hyperparameters
-        config_updates = sample_hyperparams()
+        config_updates = sample_hyperparams(hyperparam_specs)
         deep_update(config_updates, base_config)
 
         # Up until this point, all training parameters/options were under the
