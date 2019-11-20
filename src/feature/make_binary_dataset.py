@@ -9,15 +9,6 @@ dataset_ex = sacred.Experiment("dataset")
 
 @dataset_ex.config
 def config():
-    # Mapping of bound state to numerical value
-    states_map = {"U": 0, "B": 1, "A": -1}
-
-    # Whether we need to convert states to numbers
-    convert_states = False
-
-    # When computing model output metrics, ignore outputs of this value
-    output_ignore_value = states_map["A"]
-
     # Path to reference genome FASTA
     reference_fasta = "/users/amtseng/genomes/hg38.fasta"
 
@@ -39,21 +30,14 @@ def config():
     # Sample every X negatives
     negative_stride = 13
 
+    # Probability of noising/varying a positive example
+    noise_prob = 0.3
+
     # Number of workers for the data loader
     num_workers = 10
 
     # Dataset seed (for shuffling)
     dataset_seed = None
-
-
-@dataset_ex.capture
-def states_to_vals(table, states_map):
-    """
-    From a DataFrame whose columns are states (U, B, or A), converts them all
-    into numerical values using `states_map`. This function will CHANGE `table`!
-    """
-    for colname in table:
-        table[colname] = table[colname].replace(states_map)
 
 
 class CoordsToVals():
@@ -62,14 +46,14 @@ class CoordsToVals():
     columns of values for each coordinate, this creates an object that maps a
     list of coordinates (tuples) to a NumPy array of values at those coordinates.
     Arguments:
-        `gzipped_bed_file`: Path to gzipped BED file containing a set of
+        `gzipped_bed_file`: path to gzipped BED file containing a set of
             coordinates, with the extra columns being output values; coordinates
             are assumed to be on the positive strand
-        `hastitle`: Whether or not the BED file has a header
-        `convert_states`: Whether or not the states need to be convered to
-            numerical values
+        `hastitle`: whether or not the BED file has a header
+        `noise_prob`: probability of corruption for a positive example; a
+            roughly equal number of negatives are also corrupted
     """
-    def __init__(self, gzipped_bed_file, hastitle=False, convert_states=True):
+    def __init__(self, gzipped_bed_file, hastitle=False, noise_prob=0):
         self.gzipped_bed_file = gzipped_bed_file
 
         header = 0 if hastitle else None
@@ -88,14 +72,37 @@ class CoordsToVals():
         )
         print(str((datetime.now() - start).seconds) + "s")
 
-        if convert_states:
-            # Convert output states to numerical values
-            print("\tConverting states to values...", end=" ", flush=True)
-            start = datetime.now()
-            states_to_vals(coord_val_table)
-            print(str((datetime.now() - start).seconds) + "s")
-
         self.coord_val_table = coord_val_table
+
+        if noise_prob:
+            self._noise_labels(noise_prob)
+
+    def _noise_labels(self, noise_prob):
+        """
+        Randomly selects a proportion `noise_prob` of positives in
+        `self.coord_val_table` to set to negative. Randomly selects an equal
+        number of negatives in the table to set to positive. This process is
+        uniformly agnostic to the tasks (i.e. each task is equally likely to be
+        noised).
+        """
+        print(
+            "\tRandomly adding noise (p = %3.3f)..." % noise_prob, end=" ",
+            flush=True
+        )
+        start = datetime.now()
+        values = self.coord_val_table.values
+        pos_mask, neg_mask = values == 1, values == 0
+        pos_rand_mask = np.random.choice(
+            [True, False], size=values.shape, p=[noise_prob, 1 - noise_prob]
+        )
+        neg_prob = np.sum(pos_mask & pos_rand_mask) / np.sum(neg_mask)
+        neg_rand_mask = np.random.choice(
+            [True, False], size=values.shape, p=[neg_prob, 1 - neg_prob]
+        )
+        values[pos_mask & pos_rand_mask] = 0
+        values[neg_mask & neg_rand_mask] = 1
+        self.coord_val_table[list(self.coord_val_table)] = values 
+        print(str((datetime.now() - start).seconds) + "s")
 
     def _get_ndarray(self, coords):
         """
@@ -112,19 +119,19 @@ class CoordsDownsampler(torch.utils.data.sampler.Sampler):
     """
     Creates a batch producer that evenly samples negatives and/or positives.
     Arguments:
-        `coords`: A Pandas MultiIndex containing coordinate tuples
-        `pos_coord_inds`: A NumPy array of which indices of `coords` are
+        `coords`: a Pandas MultiIndex containing coordinate tuples
+        `pos_coord_inds`: a NumPy array of which indices of `coords` are
             positive examples
-        `neg_coord_inds`: A NumPy array of which indices of `coords` are
+        `neg_coord_inds`: a NumPy array of which indices of `coords` are
             negative examples
-        `batch_size`: Number of samples per batch
-        `revcomp`: Whether or not to add revcomp of coordinates in batch
-        `shuffle_before_epoch`: Whether or not to shuffle all examples before
+        `batch_size`: number of samples per batch
+        `revcomp`: whether or not to add revcomp of coordinates in batch
+        `shuffle_before_epoch`: whether or not to shuffle all examples before
             each epoch
-        `pos_row_fn`: A function that, given a Coordinate, returns whether or
+        `pos_row_fn`: a function that, given a Coordinate, returns whether or
             not it's a positive example
-        `neg_stride`: Sample every `neg_stride` negatives before each epoch
-        `pos_stride`: Sample every `pos_stride` positives before each epoch
+        `neg_stride`: sample every `neg_stride` negatives before each epoch
+        `pos_stride`: sample every `pos_stride` positives before each epoch
     """
     def __init__(
         self, coords, pos_coord_inds, neg_coord_inds, batch_size,
@@ -199,14 +206,14 @@ class CoordDataset(torch.utils.data.IterableDataset):
     """
     Generates single samples of a one-hot encoded sequence and value.
     Arguments:
-        `coords_batcher (CoordsDownsampler): Maps indices to batches of
+        `coords_batcher (CoordsDownsampler): maps indices to batches of
             coordinates
-        `coords_to_seq (CoordsToSeq)`: Maps coordinates to 1-hot encoded
+        `coords_to_seq (CoordsToSeq)`: maps coordinates to 1-hot encoded
             sequences
-        `coords_to_vals (CoordsToVals)`: Maps coordinates to values to predict
-        `revcomp`: Whether or not to perform revcomp to the batch; this will
+        `coords_to_vals (CoordsToVals)`: maps coordinates to values to predict
+        `revcomp`: whether or not to perform revcomp to the batch; this will
             double the batch size implicitly
-        `return_coords`: If True, each batch returns the set of coordinates for
+        `return_coords`: if True, each batch returns the set of coordinates for
             that batch along with the 1-hot encoded sequences and values
     """
     def __init__(
@@ -240,7 +247,7 @@ class CoordDataset(torch.utils.data.IterableDataset):
             coords = coords_batch.values
             if self.revcomp:
                 coords = np.concatenate([coords, coords])
-            return coords, seqs, vals
+            return seqs, vals, coords
         else:
             return seqs, vals
 
@@ -277,7 +284,7 @@ class CoordDataset(torch.utils.data.IterableDataset):
 @dataset_ex.capture
 def create_data_loader(
     bedfile_path, batch_size, reference_fasta, input_length,
-    positive_stride, negative_stride, num_workers, convert_states, revcomp,
+    positive_stride, negative_stride, noise_prob, num_workers, revcomp,
     dataset_seed, hastitle=True, shuffle=True, return_coords=False
 ):
     """
@@ -287,7 +294,7 @@ def create_data_loader(
     """
     # Maps set of coordinates to state values, imported from a BED file
     coords_to_vals = CoordsToVals(
-        bedfile_path, hastitle=hastitle, convert_states=convert_states
+        bedfile_path, hastitle=hastitle, noise_prob=noise_prob
     )
 
     # Get the set of coordinates as a Pandas MultiIndex and pass it to the
@@ -360,22 +367,16 @@ def main():
     import os
     import tqdm
 
-    tfname = "CEBPB"
+    tfname = "SPI1"
 
-    base_path = "/users/amtseng/att_priors/data/"
+    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/binary/labels/"
 
     # ENCODE:
     bedfile = os.path.join(
-        base_path,
-        "processed/ENCODE/binary/labels/{0}/{0}_holdout_labels.bed.gz".format(tfname)
+        base_path, "{0}/{0}_val_labels.bed.gz".format(tfname)
     )
 
-    print(tfname)
-
-    loader = create_data_loader(
-        bedfile, convert_states=False,
-        reference_fasta = "/users/amtseng/genomes/hg38.fasta"
-    )
+    loader = create_data_loader(bedfile, return_coords=True)
     loader.dataset.on_epoch_start()
     start_time = datetime.now()
     for batch in tqdm.tqdm(loader, total=len(loader.dataset)):
