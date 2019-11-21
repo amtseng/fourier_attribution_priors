@@ -40,6 +40,9 @@ def config():
     # Use this stride when tiling coordinates across a peak
     peak_tiling_stride = 25
 
+    # Probability of noising/varying a positive example
+    noise_prob = 0
+
     # Number of workers for the data loader
     num_workers = 10
 
@@ -153,6 +156,8 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         `jitter`: random amount to jitter each positive coordinate example by
         `genome_sampler`: a GenomeIntervalSampler instance, which samples
             intervals randomly from the genome
+        `noise_prob`: probability of corruption for a positive example; a
+            roughly equal number of negatives are also corrupted
         `return_peaks`: if True, returns the peaks and summits sampled from the
             peak set as a B x 3 array
         `shuffle_before_epoch`: Whether or not to shuffle all examples before
@@ -160,12 +165,13 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
     """
     def __init__(
         self, pos_coords_beds, batch_size, neg_ratio, jitter, genome_sampler,
-        return_peaks=False, shuffle_before_epoch=False, seed=None
+        noise_prob=0, return_peaks=False, shuffle_before_epoch=False, seed=None
     ):
         self.batch_size = batch_size
         self.neg_ratio = neg_ratio
         self.jitter = jitter
         self.genome_sampler = genome_sampler
+        self.noise_prob = noise_prob
         self.return_peaks = return_peaks
         self.shuffle_before_epoch = shuffle_before_epoch
 
@@ -184,6 +190,14 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
             )
             sample_coords.append(coords)
         self.sample_coords = np.concatenate(sample_coords)
+
+        # Randomly set a subset of the sample coordinates to have a status of -1
+        if noise_prob:
+            rand_mask = np.random.choice(
+                [True, False], size=self.sample_coords.shape[0],
+                p=[noise_prob, 1 - noise_prob]
+            )
+            self.sample_coords[rand_mask, 6] = -1  # -1 is the "to noise" marker
 
         # Number of positives and negatives per batch
         self.num_coords = len(self.sample_coords)
@@ -388,10 +402,11 @@ class CoordDataset(torch.utils.data.IterableDataset):
         """
         Returns a batch, which consists of an B x L x 4 NumPy array of 1-hot
         encoded sequence, an B x T x L x 2 NumPy array of profiles, and a 1D
-        length-N NumPy array of statuses. The profile for each of the T tasks in
+        length-B NumPy array of statuses. The profile for each of the T tasks in
         `coords_to_vals_list` is returned, in the same order as in this list,
         and each task contains 2 tracks, for the plus and minus strand,
-        respectively.
+        respectively. This function will also perform noising if specified by
+        the coordinate statuses
         """
         # Get batch of coordinates for this index
         if self.return_coords:
@@ -407,6 +422,25 @@ class CoordDataset(torch.utils.data.IterableDataset):
             np.stack([ctv_1(coords), ctv_2(coords)], axis=2) \
             for ctv_1, ctv_2 in self.coords_to_vals_list
         ], axis=1)
+
+        # According to the status of the coordinates, if some of the positives
+        # needed to be noised, swap their profiles with some randomly selected
+        # negatives
+        pos_to_swap = status == -1  # -1 is the marker for noising positives
+        num_to_swap = np.sum(pos_to_swap)
+        if num_to_swap:
+            pos_profs = profiles[pos_to_swap]
+            neg_to_swap = np.random.choice(
+                np.where(status == 0)[0], size=np.sum(pos_to_swap),
+                replace=False
+            )
+            neg_profs = profiles[neg_to_swap]
+            profiles[pos_to_swap] = neg_profs
+            profiles[neg_to_swap] = pos_profs
+            # Set status of swapped positives to 0, and swapped negatives to 1
+            # arbitrarily
+            status[pos_to_swap] = 0
+            status[neg_to_swap] = 1
 
         # If reverse complementation was done, double sizes of everything else
         if self.revcomp:
@@ -460,8 +494,8 @@ class CoordDataset(torch.utils.data.IterableDataset):
 def create_data_loader(
     peaks_bed_paths, profile_bigwig_paths, sampling_type, batch_size,
     reference_fasta, chrom_sizes, input_length, profile_length, negative_ratio,
-    peak_tiling_stride, num_workers, revcomp, jitter_size, dataset_seed,
-    shuffle=True, return_coords=False
+    peak_tiling_stride, noise_prob, num_workers, revcomp, jitter_size,
+    dataset_seed, shuffle=True, return_coords=False
 ):
     """
     Creates an IterableDataset object, which iterates through batches of
@@ -503,7 +537,7 @@ def create_data_loader(
         # Yields batches of positive and negative coordinates
         coords_batcher = SamplingCoordsBatcher(
             peaks_bed_paths, batch_size, negative_ratio, jitter_size,
-            genome_sampler, return_peaks=return_coords,
+            genome_sampler, noise_prob, return_peaks=return_coords,
             shuffle_before_epoch=shuffle, seed=dataset_seed
         )
     elif sampling_type == "SummitCenteringCoordsBatcher":
@@ -582,7 +616,7 @@ def main():
     ]
 
     loader = create_data_loader(
-        peaks_bed_files, profile_bigwig_files, "PeakTilingCoordsBatcher",
+        peaks_bed_files, profile_bigwig_files, "SamplingCoordsBatcher",
         return_coords=True
     )
     loader.dataset.on_epoch_start()
@@ -613,12 +647,12 @@ def main():
     print(peak, rc_peak)
 
     import matplotlib.pyplot as plt
+    task_ind = 0
     fig, ax = plt.subplots(2, 1)
-    task_ind = 3
-    ax[0].plot(prof[task_ind][0])
-    ax[0].plot(prof[task_ind][1])
+    ax[0].plot(prof[task_ind][:, 0])
+    ax[0].plot(prof[task_ind][:, 1])
 
-    ax[1].plot(rc_prof[task_ind][0])
-    ax[1].plot(rc_prof[task_ind][1])
+    ax[1].plot(rc_prof[task_ind][:, 0])
+    ax[1].plot(rc_prof[task_ind][:, 1])
 
     plt.show()
