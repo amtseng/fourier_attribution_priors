@@ -259,7 +259,9 @@ class BinaryTFBindingPredictor(torch.nn.Module):
             # Magnitude of the Fourier coefficients, normalized:
             pos_fft = torch.fft(pos_grads_complex, 1)
             pos_mags = torch.norm(pos_fft, dim=2)
-            pos_mags = pos_mags / torch.sum(pos_mags, dim=1, keepdim=True)
+            pos_mag_sum = torch.sum(pos_mags, dim=1, keepdim=True)
+            pos_mag_sum[pos_mag_sum == 0] = 1  # Keep 0s when the sum is 0
+            pos_mags = pos_mags / pos_mag_sum
             # Cut off DC and high-frequency components:
             pos_mags = pos_mags[:, 1:pos_limit]
             pos_score = torch.sum(pos_mags, dim=1)
