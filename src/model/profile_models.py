@@ -246,7 +246,8 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         return prof_pred, count_pred
 
     def correctness_loss(
-        self, true_profs, logit_pred_profs, log_pred_counts, count_loss_weight
+        self, true_profs, logit_pred_profs, log_pred_counts, count_loss_weight,
+        return_separate_losses=False
     ):
         """
         Returns the loss of the correctness off the predicted profiles and
@@ -266,7 +267,9 @@ class ProfileTFBindingPredictor(torch.nn.Module):
                 read counts (base e)
             `count_loss_weight`: amount to weight the portion of the loss for
                 the counts
-        Returns a scalar loss tensor.
+            `return_separate_losses`: if True, also return the profile and
+                counts losses (scalar Tensors)
+        Returns a scalar loss tensor, or perhaps 3 scalar loss tensors.
         """
         assert true_profs.size() == logit_pred_profs.size()
         batch_size = true_profs.size(0)
@@ -313,11 +316,16 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         batch_count_loss = torch.mean(mse, dim=1)
         count_loss = torch.mean(batch_count_loss)
 
-        return prof_loss + (count_loss_weight * count_loss)
+        final_loss = prof_loss + (count_loss_weight * count_loss)
+
+        if return_separate_losses:
+            return final_loss, prof_loss, count_loss
+        else:
+            return final_loss
 
     def att_prior_loss(
         self, status, input_grads, pos_limit, pos_weight,
-        att_prior_grad_smooth_sigma
+        att_prior_grad_smooth_sigma, return_separate_losses=False
     ):
         """
         Computes an attribution prior loss for some given training examples.
@@ -337,8 +345,10 @@ class ProfileTFBindingPredictor(torch.nn.Module):
                 a similar scale as the negative loss
             `att_prior_grad_smooth_sigma`: amount to smooth the gradient before
                 computing the loss
+            `return_separate_losses`: if True, also return the positive and
+                negative losses (scalar Tensors)
         Returns a single scalar Tensor consisting of the attribution loss for
-        the batch.
+        the batch, perhaps with the positive and negative losses (scalars), too.
         """
         max_rect_grads = torch.max(self.relu(input_grads), dim=2)[0]
         # Smooth the gradients
@@ -366,15 +376,20 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             pos_loss = 1 - pos_score
             pos_loss_mean = torch.mean(pos_loss)
         else:
-            pos_loss_mean = 0
+            pos_loss_mean = torch.zeros(1)
         # Loss for negatives
         if neg_grads.nelement():
             neg_loss = torch.sum(neg_grads, dim=1)
             neg_loss_mean = torch.mean(neg_loss)
         else:
-            neg_loss_mean = 0
+            neg_loss_mean = torch.zeros(1)
 
-        return (pos_weight * pos_loss_mean) + neg_loss_mean
+        final_loss = (pos_weight * pos_loss_mean) + neg_loss_mean
+
+        if return_separate_losses:
+            return final_loss, pos_loss_mean, neg_loss_mean
+        else:
+            return final_loss
 
 
 def profile_logits_to_log_probs(logit_pred_profs, axis=2):

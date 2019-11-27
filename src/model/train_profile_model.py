@@ -11,7 +11,7 @@ import feature.make_profile_dataset as make_profile_dataset
 
 MODEL_DIR = os.environ.get(
     "MODEL_DIR",
-    "/users/amtseng/att_priors/models/trained_profile_models/misc/"
+    "/users/amtseng/att_priors/models/trained_models/profile_models/misc/"
 )
 
 train_ex = sacred.Experiment("train", ingredients=[
@@ -156,26 +156,31 @@ def model_loss(
             the input depth; this is the gradient of the output with respect to
             the input, times the input itself
         `epoch_num`: a 0-indexed integer representing the current epoch
-    Returns a scalar Tensor containing the loss for the given batch, as well as
-    a pair consisting of the correctness loss and the attribution prior loss.
-    If the attribution prior loss is not computed at all, then 0 will be in its
+    Returns a scalar Tensor containing the loss for the given batch, a pair
+    consisting of the correctness loss and the attribution prior loss, a pair
+    for the profile loss and the counts loss, and a pair for the positive
+    attribution prior loss and negative attribution prior loss.
+    If the attribution prior loss is not computed at all, then 0s will be in its
     place, instead.
     """
-    corr_loss = model.correctness_loss(
-        true_profs, log_pred_profs, log_pred_counts, counts_loss_weight
+    corr_loss, prof_loss, count_loss = model.correctness_loss(
+        true_profs, log_pred_profs, log_pred_counts, counts_loss_weight,
+        return_separate_losses=True
     )
     
     if not att_prior_loss_weight:
-        return corr_loss, (corr_loss, torch.zeros(1))
+        return corr_loss, (corr_loss, torch.zeros(1)), \
+            (prof_loss, count_loss), (torch.zeros(1), torch.zeros(1))
     
-    att_prior_loss = model.att_prior_loss(
+    att_prior_loss, pos_loss, neg_loss = model.att_prior_loss(
         status, input_grads, att_prior_pos_limit, att_prior_pos_weight,
-        att_prior_grad_smooth_sigma
+        att_prior_grad_smooth_sigma, return_separate_losses=True
     )
     weight = att_prior_loss_weight * \
         np.exp(-att_prior_loss_weight_anneal * epoch_num)
     final_loss = corr_loss + (weight * att_prior_loss)
-    return final_loss, (corr_loss, att_prior_loss)
+    return final_loss, (corr_loss, att_prior_loss), (prof_loss, count_loss), \
+        (pos_loss, neg_loss)
 
 
 @train_ex.capture
@@ -199,11 +204,11 @@ def run_epoch(
         `return_data`: if specified, returns the following as NumPy arrays:
             true profile counts, predicted profile log probabilities,
             true total counts, predicted log counts
-    Returns a list of losses for the batches, a list of correction losses
-    specifically for the batches, and a list of attribution prior losses
-    specifically for the batches. If the attribution prior loss is not computed,
-    then the list will have all 0s. If `return_data` is True, then more things
-    will be returned after these.
+    Returns lists of overall losses, correctness losses, attribution prior
+    losses, profile losses, count losses, positive prior losses, and negative
+    prior losses, where each list is over all batches. If the attribution prior
+    loss is not computed, then the corresponding lists will be all 0s.
+    If `return_data` is True, then more things will be returned after these.
     """
     assert mode in ("train", "eval")
     if mode == "train":
@@ -222,6 +227,8 @@ def run_epoch(
         torch.set_grad_enabled(True)
 
     batch_losses, corr_losses, att_losses = [], [], []
+    prof_losses, count_losses = [], []
+    pos_losses, neg_losses = [], []
     if return_data:
         # Allocate empty NumPy arrays to hold the results
         num_samples_exp = num_batches * batch_size
@@ -246,8 +253,8 @@ def run_epoch(
             input_seqs.requires_grad = True  # Set gradient required
             logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
             model.zero_grad()  # Clear gradients
-            log_pred_counts.backward(
-                util.place_tensor(torch.ones(log_pred_counts.size())),
+            logit_pred_profs.backward(
+                util.place_tensor(torch.ones(logit_pred_profs.size())),
                 retain_graph=True
             )  # Sum gradients across strands and tasks
             input_grads = input_seqs.grad * input_seqs  # Gradient * input
@@ -258,7 +265,8 @@ def run_epoch(
             logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
             status, input_grads = None, None
 
-        loss, (corr_loss, att_loss) = model_loss(
+        loss, (corr_loss, att_loss), (prof_loss, count_loss), \
+            (pos_loss, neg_loss) = model_loss(
             model, tf_profs, logit_pred_profs, log_pred_counts, status,
             input_grads, epoch_num
         )
@@ -271,6 +279,10 @@ def run_epoch(
         batch_losses.append(loss.item())
         corr_losses.append(corr_loss.item())
         att_losses.append(att_loss.item())
+        prof_losses.append(prof_loss.item())
+        count_losses.append(count_loss.item())
+        pos_losses.append(pos_loss.item())
+        neg_losses.append(neg_loss.item())
         t_iter.set_description(
             "\tLoss: %6.4f" % loss.item()
         )
@@ -304,10 +316,12 @@ def run_epoch(
         all_log_pred_counts = all_log_pred_counts[:num_samples_seen]
         all_true_profs = all_true_profs[:num_samples_seen]
         all_true_counts = all_true_counts[:num_samples_seen]
-        return batch_losses, corr_losses, att_losses, all_log_pred_profs, \
+        return batch_losses, corr_losses, att_losses, prof_losses, \
+            count_losses, pos_losses, neg_losses, all_log_pred_profs, \
             all_log_pred_counts, all_true_profs, all_true_counts
     else:
-        return batch_losses, corr_losses, att_losses
+        return batch_losses, corr_losses, att_losses, prof_losses, \
+            count_losses, pos_losses, neg_losses
 
 
 @train_ex.capture
@@ -351,8 +365,9 @@ def train_model(
         if torch.cuda.is_available:
             torch.cuda.empty_cache()  # Clear GPU memory
 
-        t_batch_losses, t_corr_losses, t_att_losses = run_epoch(
-            train_loader, "train", model, epoch, optimizer=optimizer
+        t_batch_losses, t_corr_losses, t_att_losses, t_prof_losses, \
+            t_count_losses, t_pos_losses, t_neg_losses = run_epoch(
+                train_loader, "train", model, epoch, optimizer=optimizer
         )
         train_epoch_loss = np.nanmean(t_batch_losses)
         print(
@@ -364,9 +379,14 @@ def train_model(
         _run.log_scalar("train_batch_losses", t_batch_losses)
         _run.log_scalar("train_corr_losses", t_corr_losses)
         _run.log_scalar("train_att_losses", t_att_losses)
+        _run.log_scalar("train_prof_corr_losses", t_prof_losses)
+        _run.log_scalar("train_count_corr_losses", t_count_losses)
+        _run.log_scalar("train_pos_att_losses", t_pos_losses)
+        _run.log_scalar("train_neg_att_losses", t_neg_losses)
 
-        v_batch_losses, v_corr_losses, v_att_losses = run_epoch(
-            val_loader, "eval", model, epoch
+        v_batch_losses, v_corr_losses, v_att_losses, v_prof_losses, \
+            v_count_losses, v_pos_losses, v_neg_losses = run_epoch(
+                val_loader, "eval", model, epoch
         )
         val_epoch_loss = np.nanmean(v_batch_losses)
         print(
@@ -378,6 +398,10 @@ def train_model(
         _run.log_scalar("val_batch_losses", v_batch_losses)
         _run.log_scalar("val_corr_losses", v_corr_losses)
         _run.log_scalar("val_att_losses", v_att_losses)
+        _run.log_scalar("val_prof_corr_losses", v_prof_losses)
+        _run.log_scalar("val_count_corr_losses", v_count_losses)
+        _run.log_scalar("val_pos_att_losses", v_pos_losses)
+        _run.log_scalar("val_neg_att_losses", v_neg_losses)
 
         # Save trained model for the epoch
         savepath = os.path.join(
@@ -404,12 +428,12 @@ def train_model(
 
     # Compute evaluation metrics and log them
     for data_loader, prefix in [
-        (summit_loader, "summit"), (peak_loader, "peak"),
-        (val_loader, "genomewide")
+        (summit_loader, "summit"), # (peak_loader, "peak"),
+        # (val_loader, "genomewide")
     ]:
         print("Computing validation metrics, %s:" % prefix)
-        _, _, _, log_pred_profs, log_pred_counts, true_profs, true_counts = \
-            run_epoch(
+        _, _, _, _, _, _, _, log_pred_profs, log_pred_counts, true_profs, \
+            true_counts = run_epoch(
                 data_loader, "eval", model, float("inf"), return_data=True
                 # Don't use attribution prior loss at all
         )
