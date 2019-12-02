@@ -259,7 +259,7 @@ def run_epoch(
             )  # Sum gradients across strands and tasks
             input_grads = input_seqs.grad * input_seqs  # Gradient * input
             status = util.place_tensor(torch.tensor(statuses))
-            status[status > 0] = 1  # Whenever not negative example, set to 1
+            status[status != 0] = 1  # Set to 1 if not true negative example
             input_seqs.requires_grad = False  # Reset gradient required
         else:
             logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
