@@ -175,6 +175,9 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         self.return_peaks = return_peaks
         self.shuffle_before_epoch = shuffle_before_epoch
 
+        assert neg_ratio * noise_prob == 0, \
+            "Can only have noise without negatives, and vice versa"
+
         # Read in the positive coordinates and make N x 7 array, where the
         # 7th column is the identifier of the source BED
         # Cols 1-3 should be the coordinate, 4-5 are the original peak location,
@@ -191,13 +194,17 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
             sample_coords.append(coords)
         self.sample_coords = np.concatenate(sample_coords)
 
-        # Randomly set a subset of the sample coordinates to have a status of -1
+        # Randomly select a subset of the sample coordinates to have different
+        # profiles
         if noise_prob:
+            num_to_noise = int(noise_prob * len(self.sample_coords))
             rand_mask = np.random.choice(
-                [True, False], size=self.sample_coords.shape[0],
-                p=[noise_prob, 1 - noise_prob]
+                len(self.sample_coords), size=num_to_noise, replace=False
             )
-            self.sample_coords[rand_mask, 6] = -1  # -1 is the "to noise" marker
+            neg_coords = genome_sampler.sample_intervals(num_to_noise)
+            self.noise_coords = self.sample_coords[:, :3].copy()
+            self.noise_coords[rand_mask] = neg_coords
+            self.sample_coords[rand_mask, 6] *= -1  # Negative, to denote noise
 
         # Number of positives and negatives per batch
         self.num_coords = len(self.sample_coords)
@@ -221,6 +228,10 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         peaks, consisting of the peak boundaries and the summit location
         (respectively); for negative samples drawn from the GenomeSampler, these
         values are all -1.
+        If `noise_prob` was nonzero at object creation-time, coordinates will be
+        a B x 6 2D NumPy array, where the first 3 columns are the original
+        coordinate, and the next 3 columns are a randomly selected coordinate
+        or the same coordinate.
         """
         pos_coords = self.sample_coords[
             index * self.pos_per_batch : (index + 1) * self.pos_per_batch
@@ -240,14 +251,21 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
             )
         else:
             neg_coords = np.empty(shape=(0, 3), dtype=object)
-        coords = np.concatenate([pos_coords[:,:3], neg_coords])  # Cols 1-3
+        coords = np.concatenate([pos_coords[:, :3], neg_coords])  # Cols 1-3
+
+        # If noising is to be done, add in the noisy coordinates
+        if self.noise_prob:
+            noise_coords = self.noise_coords[
+                index * self.pos_per_batch : (index + 1) * self.pos_per_batch
+            ]
+            coords = np.concatenate([coords, noise_coords], axis=1)
 
         status = np.concatenate(
-            [pos_coords[:,6], np.zeros(len(neg_coords))]  # Col 7
+            [pos_coords[:, 6], np.zeros(len(neg_coords))]  # Col 7
         ).astype(int)
 
         if self.return_peaks:
-            pos_peaks = pos_coords[:,3:6]  # Cols 4-6
+            pos_peaks = pos_coords[:, 3:6]  # Cols 4-6
             neg_peaks = np.full((len(neg_coords), 3), -1)
             peaks = np.concatenate([pos_peaks, neg_peaks])
             return coords, status, peaks
@@ -259,7 +277,10 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
    
     def on_epoch_start(self):
         if self.shuffle_before_epoch:
-            self.sample_coords = self.rng.permutation(self.sample_coords)
+            perm = self.rng.permutation(len(self.sample_coords))
+            self.sample_coords = self.sample_coords[perm]
+            if self.noise_prob:
+                self.noise_coords = self.noise_coords[perm]
 
 
 class SummitCenteringCoordsBatcher(SamplingCoordsBatcher):
@@ -414,33 +435,21 @@ class CoordDataset(torch.utils.data.IterableDataset):
         else:
             coords, status = self.coords_batcher[index]
 
+        # If noising was done, extract out the noise coordinates and use those
+        # for profiles
+        if self.coords_batcher.noise_prob:
+            seq_coords, prof_coords = coords[:, :3], coords[:, 3:]
+        else:
+            seq_coords, prof_coords = coords, coords
+
         # Map this batch of coordinates to 1-hot encoded sequences
-        seqs = self.coords_to_seq(coords, revcomp=self.revcomp)
+        seqs = self.coords_to_seq(seq_coords, revcomp=self.revcomp)
 
         # Map this batch of coordinates to the associated profiles
         profiles = np.stack([
-            np.stack([ctv_1(coords), ctv_2(coords)], axis=2) \
+            np.stack([ctv_1(prof_coords), ctv_2(prof_coords)], axis=2) \
             for ctv_1, ctv_2 in self.coords_to_vals_list
         ], axis=1)
-
-        # According to the status of the coordinates, if some of the positives
-        # needed to be noised, swap their profiles with some randomly selected
-        # negatives
-        pos_to_swap = status == -1  # -1 is the marker for noising positives
-        num_to_swap = np.sum(pos_to_swap)
-        if num_to_swap:
-            pos_profs = profiles[pos_to_swap]
-            neg_to_swap = np.random.choice(
-                np.where(status == 0)[0], size=np.sum(pos_to_swap),
-                replace=False
-            )
-            neg_profs = profiles[neg_to_swap]
-            profiles[pos_to_swap] = neg_profs
-            profiles[neg_to_swap] = pos_profs
-            # Set status of swapped positives to 0, and swapped negatives to 1
-            # arbitrarily
-            status[pos_to_swap] = 0
-            status[neg_to_swap] = 1
 
         # If reverse complementation was done, double sizes of everything else
         if self.revcomp:
@@ -454,7 +463,7 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
         if self.return_coords:
             if self.revcomp:
-                coords_ret = np.concatenate([coords, coords])
+                coords_ret = np.concatenate([seq_coords, seq_coords])
                 peaks_ret = np.concatenate([peaks, peaks])
             return seqs, profiles, status, coords_ret, peaks_ret
         else:
@@ -617,7 +626,7 @@ def main():
 
     loader = create_data_loader(
         peaks_bed_files, profile_bigwig_files, "SamplingCoordsBatcher",
-        return_coords=True
+        return_coords=True, noise_prob=0.5, negative_ratio=0
     )
     loader.dataset.on_epoch_start()
     start_time = datetime.now()
