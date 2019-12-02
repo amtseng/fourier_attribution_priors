@@ -376,13 +376,13 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             pos_loss = 1 - pos_score
             pos_loss_mean = torch.mean(pos_loss)
         else:
-            pos_loss_mean = torch.zeros(1)
+            pos_loss_mean = place_tensor(torch.zeros(1))
         # Loss for negatives
         if neg_grads.nelement():
             neg_loss = torch.sum(neg_grads, dim=1)
             neg_loss_mean = torch.mean(neg_loss)
         else:
-            neg_loss_mean = torch.zeros(1)
+            neg_loss_mean = place_tensor(torch.zeros(1))
 
         final_loss = (pos_weight * pos_loss_mean) + neg_loss_mean
 

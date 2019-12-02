@@ -245,10 +245,10 @@ def run_epoch(
     for input_seqs, profiles, statuses in t_iter:
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
         profiles = util.place_tensor(torch.tensor(profiles)).float()
-        
+
         tf_profs = profiles[:, :num_tasks, :, :]
         cont_profs = profiles[:, num_tasks:, :, :]
-        
+
         if att_prior_loss_weight > 0:
             input_seqs.requires_grad = True  # Set gradient required
             logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
@@ -463,47 +463,13 @@ def run_training(train_peak_beds, val_peak_beds, prof_bigwigs):
 
 @train_ex.automain
 def main():
-    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/profile/labels/SPI1"
+    import json
+    paths_json_path = "/users/amtseng/att_priors/data/processed/ENCODE/profile/config/SPI1/SPI1_training_paths.json"
+    with open(paths_json_path, "r") as f:
+        paths_json = json.load(f)
 
-    train_peak_beds = [
-        os.path.join(base_path, ending) for ending in [
-            "SPI1_ENCSR000BGQ_GM12878_train_peakints.bed.gz",
-            "SPI1_ENCSR000BGW_K562_train_peakints.bed.gz",
-            "SPI1_ENCSR000BIJ_GM12891_train_peakints.bed.gz",
-            "SPI1_ENCSR000BUW_HL-60_train_peakints.bed.gz"
-        ]
-    ]
-
-    val_peak_beds = [
-        os.path.join(base_path, ending) for ending in [
-            "SPI1_ENCSR000BGQ_GM12878_val_peakints.bed.gz",
-            "SPI1_ENCSR000BGW_K562_val_peakints.bed.gz",
-            "SPI1_ENCSR000BIJ_GM12891_val_peakints.bed.gz",
-            "SPI1_ENCSR000BUW_HL-60_val_peakints.bed.gz"
-        ]
-    ]
-            
-    prof_bigwigs = [
-        (os.path.join(base_path, e_1), os.path.join(base_path, e_2)) \
-        for e_1, e_2 in [
-            ("SPI1_ENCSR000BGQ_GM12878_neg.bw",
-             "SPI1_ENCSR000BGQ_GM12878_pos.bw"),
-            ("SPI1_ENCSR000BGW_K562_neg.bw",
-             "SPI1_ENCSR000BGW_K562_pos.bw"),
-            ("SPI1_ENCSR000BIJ_GM12891_neg.bw",
-             "SPI1_ENCSR000BIJ_GM12891_pos.bw"),
-            ("SPI1_ENCSR000BUW_HL-60_neg.bw",
-             "SPI1_ENCSR000BUW_HL-60_pos.bw"),
-
-            ("control_ENCSR000BGH_GM12878_neg.bw",
-             "control_ENCSR000BGH_GM12878_pos.bw"),
-            ("control_ENCSR000BGG_K562_neg.bw",
-             "control_ENCSR000BGG_K562_pos.bw"),
-            ("control_ENCSR000BIH_GM12891_neg.bw",
-             "control_ENCSR000BIH_GM12891_pos.bw"),
-            ("control_ENCSR000BVU_HL-60_neg.bw",
-             "control_ENCSR000BVU_HL-60_pos.bw")
-        ]
-    ]
+    train_peak_beds = paths_json["train_peak_beds"]
+    val_peak_beds = paths_json["val_peak_beds"]
+    prof_bigwigs = paths_json["prof_bigwigs"]
 
     run_training(train_peak_beds, val_peak_beds, prof_bigwigs)
