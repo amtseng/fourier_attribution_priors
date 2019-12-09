@@ -29,7 +29,7 @@ def config():
     revcomp = True
 
     # Maximum size of jitter to the input for augmentation; set to 0 to disable
-    jitter_size = 50
+    jitter_size = 128
 
     # Batch size; will be multiplied by two if reverse complementation is done
     batch_size = 128
@@ -465,6 +465,8 @@ class CoordDataset(torch.utils.data.IterableDataset):
             if self.revcomp:
                 coords_ret = np.concatenate([seq_coords, seq_coords])
                 peaks_ret = np.concatenate([peaks, peaks])
+            else:
+                coords_ret, peaks_ret = seq_coords, peaks
             return seqs, profiles, status, coords_ret, peaks_ret
         else:
             return seqs, profiles, status
@@ -590,43 +592,20 @@ def main():
     global data, loader
     import os
     import tqdm
+    import json
 
-    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/profile/labels/"
+    paths_json_path = "/users/amtseng/att_priors/data/processed/ENCODE/profile/config/SPI1/SPI1_training_paths.json"
 
-    peaks_bed_files = [
-        os.path.join(base_path, ending) for ending in [
-            "SPI1/SPI1_ENCSR000BGQ_GM12878_all_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BGW_K562_all_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BIJ_GM12891_all_peakints.bed.gz",
-            "SPI1/SPI1_ENCSR000BUW_HL-60_all_peakints.bed.gz"
-        ]
-    ]
-            
-    profile_bigwig_files = [
-        (os.path.join(base_path, e_1), os.path.join(base_path, e_2))
-        for e_1, e_2 in [
-            ("SPI1/SPI1_ENCSR000BGQ_GM12878_neg.bw",
-            "SPI1/SPI1_ENCSR000BGQ_GM12878_pos.bw"),
-            ("SPI1/SPI1_ENCSR000BGW_K562_neg.bw",
-            "SPI1/SPI1_ENCSR000BGW_K562_pos.bw"),
-            ("SPI1/SPI1_ENCSR000BIJ_GM12891_neg.bw",
-            "SPI1/SPI1_ENCSR000BIJ_GM12891_pos.bw"),
-            ("SPI1/SPI1_ENCSR000BUW_HL-60_neg.bw",
-            "SPI1/SPI1_ENCSR000BUW_HL-60_pos.bw"),
-            ("SPI1/control_ENCSR000BGG_K562_neg.bw",
-            "SPI1/control_ENCSR000BGG_K562_pos.bw"),
-            ("SPI1/control_ENCSR000BGH_GM12878_neg.bw",
-            "SPI1/control_ENCSR000BGH_GM12878_pos.bw"),
-            ("SPI1/control_ENCSR000BIH_GM12891_neg.bw",
-            "SPI1/control_ENCSR000BIH_GM12891_pos.bw"),
-            ("SPI1/control_ENCSR000BVU_HL-60_neg.bw",
-            "SPI1/control_ENCSR000BVU_HL-60_pos.bw")
-        ]
-    ]
+    with open(paths_json_path, "r") as f:
+        paths_json = json.load(f)
+
+    train_peak_beds = paths_json["train_peak_beds"]
+    val_peak_beds = paths_json["val_peak_beds"]
+    prof_bigwigs = paths_json["prof_bigwigs"]
 
     loader = create_data_loader(
-        peaks_bed_files, profile_bigwig_files, "SamplingCoordsBatcher",
-        return_coords=True, noise_prob=0.5, negative_ratio=0
+        val_peak_beds, prof_bigwigs, "SummitCenteringCoordsBatcher",
+        return_coords=True, noise_prob=0, negative_ratio=1
     )
     loader.dataset.on_epoch_start()
     start_time = datetime.now()

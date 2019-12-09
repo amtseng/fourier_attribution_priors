@@ -350,29 +350,25 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         Returns a single scalar Tensor consisting of the attribution loss for
         the batch, perhaps with the positive and negative losses (scalars), too.
         """
-        max_rect_grads = torch.max(self.relu(input_grads), dim=2)[0]
+        abs_grads = torch.sum(torch.abs(input_grads), dim=2)
+
         # Smooth the gradients
-        max_rect_grads_smooth = smooth_tensor_1d(
-            max_rect_grads, att_prior_grad_smooth_sigma
+        grads_smooth = smooth_tensor_1d(
+            abs_grads, att_prior_grad_smooth_sigma
         )
 
-        neg_grads = max_rect_grads_smooth[status == 0]
-        pos_grads = max_rect_grads_smooth[status == 1]
+        neg_grads = grads_smooth[status == 0]
+        pos_grads = grads_smooth[status == 1]
 
         # Loss for positives
         if pos_grads.nelement():
-            pos_grads_complex = torch.stack(
-                [pos_grads, place_tensor(torch.zeros(pos_grads.size()))], dim=2
-            )  # Convert to complex number format: a -> a + 0i
-            # Magnitude of the Fourier coefficients, normalized:
-            pos_fft = torch.fft(pos_grads_complex, 1)
+            pos_fft = torch.rfft(pos_grads, 1)
             pos_mags = torch.norm(pos_fft, dim=2)
             pos_mag_sum = torch.sum(pos_mags, dim=1, keepdim=True)
             pos_mag_sum[pos_mag_sum == 0] = 1  # Keep 0s when the sum is 0
             pos_mags = pos_mags / pos_mag_sum
             # Cut off DC and high-frequency components:
-            pos_mags = pos_mags[:, 1:pos_limit]
-            pos_score = torch.sum(pos_mags, dim=1)
+            pos_score = torch.sum(pos_mags[:, 1:pos_limit], dim=1)
             pos_loss = 1 - pos_score
             pos_loss_mean = torch.mean(pos_loss)
         else:

@@ -87,6 +87,9 @@ def config(dataset):
     # Training seed
     train_seed = None
 
+    # If set, ignore correctness loss completely
+    att_prior_loss_only = False
+
     # Imported from make_profile_dataset
     batch_size = dataset["batch_size"]
 
@@ -137,7 +140,7 @@ def model_loss(
     model, true_profs, log_pred_profs, log_pred_counts, status, input_grads,
     epoch_num, counts_loss_weight, att_prior_loss_weight,
     att_prior_loss_weight_anneal, att_prior_pos_limit, att_prior_pos_weight,
-    att_prior_grad_smooth_sigma, return_loss_parts=False
+    att_prior_grad_smooth_sigma, att_prior_loss_only
 ):
     """
     Computes the loss for the model.
@@ -178,7 +181,10 @@ def model_loss(
     )
     weight = att_prior_loss_weight * \
         np.exp(-att_prior_loss_weight_anneal * epoch_num)
-    final_loss = corr_loss + (weight * att_prior_loss)
+    if att_prior_loss_only:
+        final_loss = att_prior_loss
+    else:
+        final_loss = corr_loss + (weight * att_prior_loss)
     return final_loss, (corr_loss, att_prior_loss), (prof_loss, count_loss), \
         (pos_loss, neg_loss)
 
@@ -203,7 +209,9 @@ def run_epoch(
         `optimizer`: an instantiated PyTorch optimizer, for training mode
         `return_data`: if specified, returns the following as NumPy arrays:
             true profile counts, predicted profile log probabilities,
-            true total counts, predicted log counts
+            true total counts, predicted log counts, input sequences, input
+            gradients (if the attribution prior loss is not used, these will all
+            be garbage), and coordinates used
     Returns lists of overall losses, correctness losses, attribution prior
     losses, profile losses, count losses, positive prior losses, and negative
     prior losses, where each list is over all batches. If the attribution prior
@@ -240,24 +248,40 @@ def run_epoch(
         all_log_pred_counts = np.empty(count_shape)
         all_true_profs = np.empty(profile_shape)
         all_true_counts = np.empty(count_shape)
+        all_input_seqs = np.empty((num_samples_exp, 1346, 4))
+        all_input_grads = np.empty((num_samples_exp, 1346, 4))
+        all_coords = np.empty((num_samples_exp, 3), dtype=object)
         num_samples_seen = 0  # Real number of samples seen
 
-    for input_seqs, profiles, statuses in t_iter:
+    for input_seqs, profiles, statuses, coords, peaks in t_iter:
+        if return_data:
+            input_seqs_np = input_seqs
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
         profiles = util.place_tensor(torch.tensor(profiles)).float()
 
         tf_profs = profiles[:, :num_tasks, :, :]
         cont_profs = profiles[:, num_tasks:, :, :]
 
+        if mode == "train" and att_prior_loss_weight > 0:
+            optimizer.zero_grad()  # Clear gradients from last batch
+
         if att_prior_loss_weight > 0:
             input_seqs.requires_grad = True  # Set gradient required
             logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
-            model.zero_grad()  # Clear gradients
-            logit_pred_profs.backward(
-                util.place_tensor(torch.ones(logit_pred_profs.size())),
-                retain_graph=True
-            )  # Sum gradients across strands and tasks
-            input_grads = input_seqs.grad * input_seqs  # Gradient * input
+            # Compute the gradients of the output with respect to the input
+            input_grads, = torch.autograd.grad(
+                logit_pred_profs, input_seqs,
+                grad_outputs=util.place_tensor(
+                    torch.ones(logit_pred_profs.size())
+                ),
+                retain_graph=True, create_graph=True
+                # We'll be operating on the gradient itself, so we need to
+                # create the graph
+                # Gradients are summed across strands and tasks
+            )
+            if return_data:
+                input_grads_np = input_grads.detach().cpu().numpy()
+            input_grads = input_grads * input_seqs  # Gradient * input
             status = util.place_tensor(torch.tensor(statuses))
             status[status != 0] = 1  # Set to 1 if not true negative example
             input_seqs.requires_grad = False  # Reset gradient required
@@ -270,9 +294,8 @@ def run_epoch(
             model, tf_profs, logit_pred_profs, log_pred_counts, status,
             input_grads, epoch_num
         )
-        
+
         if mode == "train":
-            optimizer.zero_grad()  # Clear gradients from last batch
             loss.backward()  # Compute gradient
             optimizer.step()  # Update weights through backprop
 
@@ -283,6 +306,7 @@ def run_epoch(
         count_losses.append(count_loss.item())
         pos_losses.append(pos_loss.item())
         neg_losses.append(neg_loss.item())
+        print("\n%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f" % (prof_losses[-1], count_losses[-1], pos_losses[-1], neg_losses[-1], corr_losses[-1], att_losses[-1], batch_losses[-1]))
         t_iter.set_description(
             "\tLoss: %6.4f" % loss.item()
         )
@@ -306,6 +330,10 @@ def run_epoch(
             all_log_pred_counts[start:end] = log_pred_counts_np
             all_true_profs[start:end] = true_profs_np
             all_true_counts[start:end] = true_counts
+            all_input_seqs[start:end] = input_seqs_np
+            if att_prior_loss_weight:
+                all_input_grads[start:end] = input_grads_np
+            all_coords[start:end] = coords
 
             num_samples_seen += num_in_batch
 
@@ -316,9 +344,13 @@ def run_epoch(
         all_log_pred_counts = all_log_pred_counts[:num_samples_seen]
         all_true_profs = all_true_profs[:num_samples_seen]
         all_true_counts = all_true_counts[:num_samples_seen]
+        all_input_seqs = all_input_seqs[:num_samples_seen]
+        all_input_grads = all_input_grads[:num_samples_seen]
+        all_coords = all_coords[:num_samples_seen]
         return batch_losses, corr_losses, att_losses, prof_losses, \
             count_losses, pos_losses, neg_losses, all_log_pred_profs, \
-            all_log_pred_counts, all_true_profs, all_true_counts
+            all_log_pred_counts, all_true_profs, all_true_counts, \
+            all_input_seqs, all_input_grads, all_coords
     else:
         return batch_losses, corr_losses, att_losses, prof_losses, \
             count_losses, pos_losses, neg_losses
@@ -432,11 +464,20 @@ def train_model(
         # (val_loader, "genomewide")
     ]:
         print("Computing validation metrics, %s:" % prefix)
-        _, _, _, _, _, _, _, log_pred_profs, log_pred_counts, true_profs, \
-            true_counts = run_epoch(
-                data_loader, "eval", model, float("inf"), return_data=True
-                # Don't use attribution prior loss at all
+        batch_losses, corr_losses, att_losses, prof_losses, count_losses, \
+            pos_losses, neg_losses, log_pred_profs, log_pred_counts, \
+            true_profs, true_counts, input_seqs, input_grads, \
+            coords = run_epoch(
+                summit_loader, "eval", model, float("inf"), return_data=True
+                # Don't use attribution prior loss when computing final loss
         )
+        _run.log_scalar("%s_batch_losses" % prefix, batch_losses)
+        _run.log_scalar("%s_corr_losses" % prefix, corr_losses)
+        _run.log_scalar("%s_att_losses" % prefix, att_losses)
+        _run.log_scalar("%s_prof_corr_losses" % prefix, prof_losses)
+        _run.log_scalar("%s_count_corr_losses" % prefix, count_losses)
+        _run.log_scalar("%s_pos_att_losses" % prefix, pos_losses)
+        _run.log_scalar("%s_neg_att_losses" % prefix, neg_losses)
 
         metrics = profile_performance.compute_performance_metrics(
             true_profs, log_pred_profs, true_counts, log_pred_counts
@@ -447,13 +488,16 @@ def train_model(
 @train_ex.command
 def run_training(train_peak_beds, val_peak_beds, prof_bigwigs):
     train_loader = make_profile_dataset.create_data_loader(
-        train_peak_beds, prof_bigwigs, "SamplingCoordsBatcher"
+        train_peak_beds, prof_bigwigs, "SamplingCoordsBatcher",
+        return_coords=True
     )
     val_loader = make_profile_dataset.create_data_loader(
-        val_peak_beds, prof_bigwigs, "SamplingCoordsBatcher"
+        val_peak_beds, prof_bigwigs, "SamplingCoordsBatcher",
+        return_coords=True
     )
     summit_loader = make_profile_dataset.create_data_loader(
-        val_peak_beds, prof_bigwigs, "SummitCenteringCoordsBatcher"
+        val_peak_beds, prof_bigwigs, "SummitCenteringCoordsBatcher",
+        return_coords=True, revcomp=False
     )
     peak_loader = make_profile_dataset.create_data_loader(
         val_peak_beds, prof_bigwigs, "PeakTilingCoordsBatcher"
