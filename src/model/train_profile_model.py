@@ -306,7 +306,7 @@ def run_epoch(
         count_losses.append(count_loss.item())
         pos_losses.append(pos_loss.item())
         neg_losses.append(neg_loss.item())
-        print("\n%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f" % (prof_losses[-1], count_losses[-1], pos_losses[-1], neg_losses[-1], corr_losses[-1], att_losses[-1], batch_losses[-1]))
+        # print("\n%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f" % (prof_losses[-1], count_losses[-1], pos_losses[-1], neg_losses[-1], corr_losses[-1], att_losses[-1], batch_losses[-1]))
         t_iter.set_description(
             "\tLoss: %6.4f" % loss.item()
         )
@@ -486,21 +486,21 @@ def train_model(
 
 
 @train_ex.command
-def run_training(train_peak_beds, val_peak_beds, prof_bigwigs):
+def run_training(train_peak_beds, val_peak_beds, profile_hdf5):
     train_loader = make_profile_dataset.create_data_loader(
-        train_peak_beds, prof_bigwigs, "SamplingCoordsBatcher",
+        train_peak_beds, profile_hdf5, "SamplingCoordsBatcher",
         return_coords=True
     )
     val_loader = make_profile_dataset.create_data_loader(
-        val_peak_beds, prof_bigwigs, "SamplingCoordsBatcher",
+        val_peak_beds, profile_hdf5, "SamplingCoordsBatcher",
         return_coords=True
     )
     summit_loader = make_profile_dataset.create_data_loader(
-        val_peak_beds, prof_bigwigs, "SummitCenteringCoordsBatcher",
+        val_peak_beds, profile_hdf5, "SummitCenteringCoordsBatcher",
         return_coords=True, revcomp=False
     )
     peak_loader = make_profile_dataset.create_data_loader(
-        val_peak_beds, prof_bigwigs, "PeakTilingCoordsBatcher"
+        val_peak_beds, profile_hdf5, "PeakTilingCoordsBatcher"
     )
     train_model(train_loader, val_loader, summit_loader, peak_loader)
 
@@ -514,6 +514,6 @@ def main():
 
     train_peak_beds = paths_json["train_peak_beds"]
     val_peak_beds = paths_json["val_peak_beds"]
-    prof_bigwigs = paths_json["prof_bigwigs"]
+    profile_hdf5 = paths_json["profile_hdf5"]
 
-    run_training(train_peak_beds, val_peak_beds, prof_bigwigs)
+    run_training(train_peak_beds, val_peak_beds, profile_hdf5)

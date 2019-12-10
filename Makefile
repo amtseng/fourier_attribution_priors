@@ -4,3 +4,4 @@ install-dependencies:
 	pip install sacred seqdataloader tables
 	conda install pytorch torchvision cudatoolkit=10.0 -c pytorch
 	conda install -c bioconda pyfaidx pybigwig
+	conda install h5py

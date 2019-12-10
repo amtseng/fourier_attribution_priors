@@ -54,7 +54,7 @@ def download_file(download_url, save_path):
 def download_exp_files(exp_file_table, exp_id, save_dir):
     """
     Downloads some data for the given experiment. Specifically, this downloads
-    the (filtered) alignment BAM for the ChIP-seq run, the set of called peaks
+    the unfiltered alignment BAM for the ChIP-seq run, the set of called peaks
     (input to IDR), and the set of optimal IDR-filtered peaks. If some of these
     files do not exist, they will not be downloaded.
     The files are saved with the following format in `save_dir`:
@@ -64,12 +64,12 @@ def download_exp_files(exp_file_table, exp_id, save_dir):
     the most replicates.
     """
     out_to_keep = [
-        ("alignments", "bam"),
+        ("unfiltered alignments", "bam"),
         ("peaks and background as input for IDR", "bed narrowPeak"),
         ("optimal IDR thresholded peaks", "bed narrowPeak")
     ]
     shorten_out_type = {
-        "alignments": "align",
+        "unfiltered alignments": "align-unfilt",
         "peaks and background as input for IDR": "peaks-all",
         "optimal IDR thresholded peaks": "peaks-optimal"
     }
@@ -109,7 +109,9 @@ def download_tf_files(exp_file_table, cont_file_table, tf_name, save_dir):
     Given a specific TF name, downloads its alignments and peaks using
     `download_exp_files`. Then fetches the matched control ID and downloads the
     control alignments (controls don't have called peaks). Saves results to
-    `save_dir/tf_chipseq`, and controls to `save_dir/control_chipseq`.
+    `save_dir/tf_chipseq`, and controls to `save_dir/control_chipseq`. Also
+    saves a mapping from TF ChIP seq experiment ID to the experiment ID of its
+    matched control run.
     """
     tf_exp_path = os.path.join(save_dir, "tf_chipseq")
     cont_exp_path = os.path.join(save_dir, "control_chipseq")
@@ -123,12 +125,16 @@ def download_tf_files(exp_file_table, cont_file_table, tf_name, save_dir):
 
     print("Found %d experiments: %s" % (len(tf_exp_ids), ", ".join(tf_exp_ids)))
 
+    cont_mapping = open(os.path.join(save_dir, "tf_cont_mapping.tsv"), "w")
+    cont_mapping.write("%s\tcontrol\n" % tf_name)
     for tf_exp_id in tf_exp_ids:
         print(tf_exp_id)
         download_exp_files(exp_file_table, tf_exp_id, tf_exp_path)
         cont_exp_id = fetch_experiment_control(tf_exp_id)  # Matched control ID
+        cont_mapping.write("%s\t%s\n" % (tf_exp_id, cont_exp_id))
         download_exp_files(cont_file_table, cont_exp_id, cont_exp_path)
         print("")
+    cont_mapping.close()
 
 @click.command()
 @click.option(

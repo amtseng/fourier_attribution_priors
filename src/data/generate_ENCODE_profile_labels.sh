@@ -78,10 +78,6 @@ do
 	printf "\tGenerating bins of positive-binding peaks\n"
 	zcat $tfpeaksopt | awk -F "\t" '{print $1 "\t" $2 + $10 "\t" $2 + $10 "\t" $2 "\t" $3 "\t" $2 + $10}' | bedtools slop -g $chromsizes -b 500 | awk '$3 - $2 == 1000' | bedtools sort | gzip > $outdir/$tfname\_$expidcline\_all_peakints.bed.gz
 
-	# 2.2) Split into training and validation
-	zcat $outdir/$tfname\_$expidcline\_all_peakints.bed.gz | awk '$1 ~ /^(chr|chr1|chr8|chr21)$/' | gzip > $outdir/$tfname\_$expidcline\_val_peakints.bed.gz
-	zcat $outdir/$tfname\_$expidcline\_all_peakints.bed.gz | awk '$1 !~ /^(chr|chr1|chr8|chr21)$/' | gzip > $outdir/$tfname\_$expidcline\_train_peakints.bed.gz
-
 	# Clean up this iteration
 	rm -rf $tempdir/*
 done
