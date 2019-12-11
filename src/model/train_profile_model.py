@@ -262,8 +262,13 @@ def run_epoch(
         tf_profs = profiles[:, :num_tasks, :, :]
         cont_profs = profiles[:, num_tasks:, :, :]
 
-        if mode == "train" and att_prior_loss_weight > 0:
-            optimizer.zero_grad()  # Clear gradients from last batch
+        # Clear gradients from last batch if training
+        if mode == "train":
+            optimizer.zero_grad()
+        elif att_prior_loss_weight > 0:
+            # Not training mode, but we still need to zero out weights because
+            # we are computing the input gradients
+            model.zero_grad()
 
         if att_prior_loss_weight > 0:
             input_seqs.requires_grad = True  # Set gradient required
