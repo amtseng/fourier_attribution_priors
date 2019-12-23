@@ -324,7 +324,7 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             return final_loss
 
     def att_prior_loss(
-        self, status, input_grads, pos_limit, pos_weight,
+        self, status, input_grads, pos_limit, neg_weight,
         att_prior_grad_smooth_sigma, return_separate_losses=False
     ):
         """
@@ -341,8 +341,8 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             `pos_limit`: the maximum integer frequency index, k, to consider for
                 the positive loss; this corresponds to a frequency cut-off of
                 pi * k / L; k should be less than L / 2
-            `pos_weight`: the amount to weight the positive loss by, to give it
-                a similar scale as the negative loss
+            `neg_weight`: the amount to weight the negative loss by, relative to
+                the positive loss
             `att_prior_grad_smooth_sigma`: amount to smooth the gradient before
                 computing the loss
             `return_separate_losses`: if True, also return the positive and
@@ -373,14 +373,15 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             pos_loss_mean = torch.mean(pos_loss)
         else:
             pos_loss_mean = place_tensor(torch.zeros(1))
+
         # Loss for negatives
-        if neg_grads.nelement():
+        if neg_weight > 0 and neg_grads.nelement():
             neg_loss = torch.sum(neg_grads, dim=1)
             neg_loss_mean = torch.mean(neg_loss)
         else:
             neg_loss_mean = place_tensor(torch.zeros(1))
 
-        final_loss = (pos_weight * pos_loss_mean) + neg_loss_mean
+        final_loss = pos_loss_mean + (neg_weight * neg_loss_mean)
 
         if return_separate_losses:
             return final_loss, pos_loss_mean, neg_loss_mean

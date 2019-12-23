@@ -55,8 +55,7 @@ def config(dataset):
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
     att_prior_loss_weight = 1.0
 
-    # Annealing factor for attribution prior loss weight: e^(-factor * epoch);
-    # set to 0 for no annealing
+    # Annealing factor for attribution prior loss weight: e^(factor * epoch) - 1
     att_prior_loss_weight_anneal = 0.5
 
     # Smoothing amount for gradients before computing attribution prior loss;
@@ -66,8 +65,8 @@ def config(dataset):
     # Maximum frequency integer to consider for a positive attribution prior
     att_prior_pos_limit = 160
 
-    # Weight for positives within the attribution prior loss
-    att_prior_pos_weight = 1.0
+    # Weight for negatives within the attribution prior loss
+    att_prior_neg_weight = 0
 
     # Number of training epochs
     num_epochs = 10
@@ -139,7 +138,7 @@ def create_model(
 def model_loss(
     model, true_profs, log_pred_profs, log_pred_counts, status, input_grads,
     epoch_num, counts_loss_weight, att_prior_loss_weight,
-    att_prior_loss_weight_anneal, att_prior_pos_limit, att_prior_pos_weight,
+    att_prior_loss_weight_anneal, att_prior_pos_limit, att_prior_neg_weight,
     att_prior_grad_smooth_sigma, att_prior_loss_only
 ):
     """
@@ -176,11 +175,11 @@ def model_loss(
             (prof_loss, count_loss), (torch.zeros(1), torch.zeros(1))
     
     att_prior_loss, pos_loss, neg_loss = model.att_prior_loss(
-        status, input_grads, att_prior_pos_limit, att_prior_pos_weight,
+        status, input_grads, att_prior_pos_limit, att_prior_neg_weight,
         att_prior_grad_smooth_sigma, return_separate_losses=True
     )
     weight = att_prior_loss_weight * \
-        np.exp(-att_prior_loss_weight_anneal * epoch_num)
+        (np.exp(att_prior_loss_weight_anneal * epoch_num) - 1)
     if att_prior_loss_only:
         final_loss = att_prior_loss
     else:
