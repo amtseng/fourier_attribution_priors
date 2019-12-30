@@ -50,13 +50,13 @@ def config(dataset):
     num_tasks = 4
 
     # Amount to weight the counts loss within the correctness loss
-    counts_loss_weight = 100
+    counts_loss_weight = 20
 
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
-    att_prior_loss_weight = 1.0
+    att_prior_loss_weight = 200
 
     # Annealing factor for attribution prior loss weight: e^(factor * epoch) - 1
-    att_prior_loss_weight_anneal = 0.5
+    att_prior_loss_weight_anneal = 0.3
 
     # Smoothing amount for gradients before computing attribution prior loss;
     # Smoothing window size is 1 + (2 * sigma); set to 0 for no smoothing

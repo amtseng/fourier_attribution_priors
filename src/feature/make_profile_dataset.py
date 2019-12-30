@@ -32,7 +32,7 @@ def config():
     jitter_size = 128
 
     # Batch size; will be multiplied by two if reverse complementation is done
-    batch_size = 128
+    batch_size = 64
 
     # Sample X negatives randomly from the genome for every positive example
     negative_ratio = 1
