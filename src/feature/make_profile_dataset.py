@@ -640,9 +640,9 @@ def main():
     )
     loader.dataset.on_epoch_start()
     start_time = datetime.now()
-    for batch in tqdm.tqdm(loader, total=len(loader.dataset)):
-        data = batch
-        break
+    for _ in range(2):
+        for batch in tqdm.tqdm(loader, total=len(loader.dataset)):
+            data = batch
     end_time = datetime.now()
     print("Time: %ds" % (end_time - start_time).seconds)
 

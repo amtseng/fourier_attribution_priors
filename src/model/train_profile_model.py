@@ -53,10 +53,11 @@ def config(dataset):
     counts_loss_weight = 20
 
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
-    att_prior_loss_weight = 200
+    att_prior_loss_weight = 50
 
-    # Annealing factor for attribution prior loss weight: e^(factor * epoch) - 1
-    att_prior_loss_weight_anneal = 0.3
+    # Annealing factor for attribution prior loss weight: 2/(1 + e^(-c*x)) - 1
+    # Set to None for no annealing
+    att_prior_loss_weight_anneal = 1
 
     # Smoothing amount for gradients before computing attribution prior loss;
     # Smoothing window size is 1 + (2 * sigma); set to 0 for no smoothing
@@ -178,8 +179,12 @@ def model_loss(
         status, input_grads, att_prior_pos_limit, att_prior_neg_weight,
         att_prior_grad_smooth_sigma, return_separate_losses=True
     )
-    weight = att_prior_loss_weight * \
-        (np.exp(att_prior_loss_weight_anneal * epoch_num) - 1)
+
+    if att_prior_loss_weight_anneal is None:
+        weight = att_prior_loss_weight
+    else:
+        weight = att_prior_loss_weight * \
+            ((2 / (1 + np.exp(-att_prior_loss_weight_anneal * epoch_num))) - 1)
     if att_prior_loss_only:
         final_loss = att_prior_loss
     else:
