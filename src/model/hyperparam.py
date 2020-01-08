@@ -68,6 +68,14 @@ def run_train_command(config_updates, model_type):
     help="Path to file containing paths for training data"
 )
 @click.option(
+    "--chrom-split-json-path", "-s", nargs=1, required=True,
+    help="Path to JSON containing possible chromosome splits"
+)
+@click.option(
+    "--chrom-split-key", "-k", nargs=1, required=True, type=str,
+    help="Key to chromosome split JSON, denoting the desired split"
+)
+@click.option(
     "--num-runs", "-n", nargs=1, default=50, help="Number of runs for tuning"
 )
 @click.option(
@@ -82,8 +90,8 @@ def run_train_command(config_updates, model_type):
     "config_cli_tokens", nargs=-1
 )
 def main(
-    model_type, file_specs_json_path, num_runs, hyperparam_json_path,
-    config_json_path, config_cli_tokens
+    model_type, file_specs_json_path, chrom_split_json_path, chrom_split_key,
+    num_runs, hyperparam_json_path, config_json_path, config_cli_tokens
 ):
     """
     Launches hyperparameter tuning for a given number of runs. The model trained can be binary or profile. Below is a description of the parameters.
@@ -92,8 +100,11 @@ def main(
         Either "binary" or "profile", which is the type of model to train.
 
     File specs JSON:
-        For a binary model, this JSON should have two keys: `train_bed_path` and `val_bed_path`, referring to the paths to the BED file with training coordinates/values and the BED file with validation coordinates/values, respectively. For a profile model, this JSON should have the following keys: `train_peak_beds`, which is a list of paths to BED files containing the peak and summit locations (one per task); `val_peak_beds`, a list of paths to similar BED files, but for validation instead of training; and `profile_hdf5`, an HDF5 that contains profiles separated by chromosome, with each dataset being an L x S x 2 array, where L is the chromosome length, and S is the set of profiles (and 2 for each strand); the first half of S is the profiles to predict, the second half of S is the control profiles.
-    
+        For a binary model, this JSON should have two keys: `train_bed_path` and `val_bed_path`, referring to the paths to the BED file with training coordinates/values and the BED file with validation coordinates/values, respectively. For a profile model, this JSON should have the following keys: `peak_beds`, which is a list of paths to BED files containing the peak and summit locations (one per task); and `profile_hdf5`, an HDF5 that contains profiles separated by chromosome, with each dataset being an L x S x 2 array, where L is the chromosome length, and S is the set of profiles (and 2 for each strand); the first half of S is the profiles to predict, the second half of S is the control profiles.
+
+    Chromosome splits JSON:
+        Training is split into chromosomes, where specific chromosomes constitute the training set, validation set, and test set. This JSON must map split keys to dictionaries for a split, like such: {"1": {"train": ["chr1", "chr2"], "val": ["chr3"], "test": ["chr4"]}, "2": ...}. The splits key determines which split to use
+
     Hyperparameters specs JSON:
         An optional JSON that specifies hyperparameters to tune. The entries should either be under the `train` dictionary or `dataset` dictionary, and each entry can be a distribution sampler or list sampler. For distribution samplers, the entry should map to a pair of values, which are endpoints for random sampling. The `log_scale` argument, if specified as a third value, determines whether sampling should be on a log scale. For list samplers, the entry should map to a list of possible values to choose from. Example: {train: {learning_rate: {dist: [-3, -1, True]}, ...}, dataset: {batch_size: {list: [32, 64, 128]}, ...}}
 
@@ -120,6 +131,15 @@ def main(
         file_specs_json = json.load(f)
     for key in file_specs_json:
         base_config[key] = file_specs_json[key]
+
+    # Extract the chromosome split to use and put them into the base config at
+    # the top level; these will also be filled into the training command
+    with open(chrom_split_json_path, "r") as f:
+        chrom_split_json = json.load(f)
+    split = chrom_split_json[chrom_split_key]
+    base_config["train_chroms"] = split["train"]
+    base_config["val_chroms"] = split["val"]
+    base_config["test_chroms"] = split["test"]
 
     # Read in the hyperparameter specs dictionary
     if hyperparam_json_path:
@@ -189,4 +209,4 @@ def main(
 
         
 if __name__ == "__main__":
-    main()   
+    main()

@@ -315,7 +315,6 @@ def run_epoch(
         count_losses.append(count_loss.item())
         pos_losses.append(pos_loss.item())
         neg_losses.append(neg_loss.item())
-        # print("\n%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f\t%6.3f" % (prof_losses[-1], count_losses[-1], pos_losses[-1], neg_losses[-1], corr_losses[-1], att_losses[-1], batch_losses[-1]))
         t_iter.set_description(
             "\tLoss: %6.4f" % loss.item()
         )
@@ -367,23 +366,23 @@ def run_epoch(
 
 @train_ex.capture
 def train_model(
-    train_loader, val_loader, summit_loader, peak_loader, num_epochs,
-    learning_rate, early_stopping, early_stop_hist_len, early_stop_min_delta,
-    train_seed, _run
+    train_loader, val_loader, test_summit_loader, test_peak_loader,
+    test_genome_loader, num_epochs, learning_rate, early_stopping,
+    early_stop_hist_len, early_stop_min_delta, train_seed, _run
 ):
     """
     Trains the network for the given training and validation data.
     Arguments:
-        `train_loader` (DataLoader): a data loader for the training data, each
-            batch giving the 1-hot encoded sequence, profiles, and statuses
-        `val_loader` (DataLoader): a data loader for the validation data, each
-            batch giving the 1-hot encoded sequence, profiles, and statuses
-        `summit_loader` (DataLoader): a data loader for the validation data,
-            with coordinates centered at summits, each batch giving the 1-hot
-            encoded sequence, profiles, and statuses
-        `peak_loader` (DataLoader): a data loader for the validation data,
-            with coordinates tiled across peaks, each batch giving the 1-hot
-            encoded sequence, profiles, and statuses
+        `train_loader` (DataLoader): a data loader for the training data
+        `val_loader` (DataLoader): a data loader for the validation data
+        `test_summit_loader` (DataLoader): a data loader for the test data, with
+            coordinates centered at summits
+        `test_peak_loader` (DataLoader): a data loader for the test data, with
+            coordinates tiled across peaks
+        `test_genome_loader` (DataLoader): a data loader for the test data, with
+            summit-centered coordinates augmented with sampled negatives
+    Note that all data loaders are expected to yield the 1-hot encoded
+    sequences, profiles, statuses, source coordinates, and source peaks.
     """
     run_num = _run._id
     output_dir = os.path.join(MODEL_DIR, str(run_num))
@@ -469,24 +468,24 @@ def train_model(
 
     # Compute evaluation metrics and log them
     for data_loader, prefix in [
-        (summit_loader, "summit"), # (peak_loader, "peak"),
-        # (val_loader, "genomewide")
+        (test_summit_loader, "summit"), # (test_peak_loader, "peak"),
+        # (test_genome_loader, "genomewide")
     ]:
-        print("Computing validation metrics, %s:" % prefix)
+        print("Computing test metrics, %s:" % prefix)
         batch_losses, corr_losses, att_losses, prof_losses, count_losses, \
             pos_losses, neg_losses, log_pred_profs, log_pred_counts, \
             true_profs, true_counts, input_seqs, input_grads, \
             coords = run_epoch(
-                summit_loader, "eval", model, float("inf"), return_data=True
+                data_loader, "eval", model, 0, return_data=True
                 # Don't use attribution prior loss when computing final loss
         )
-        _run.log_scalar("%s_batch_losses" % prefix, batch_losses)
-        _run.log_scalar("%s_corr_losses" % prefix, corr_losses)
-        _run.log_scalar("%s_att_losses" % prefix, att_losses)
-        _run.log_scalar("%s_prof_corr_losses" % prefix, prof_losses)
-        _run.log_scalar("%s_count_corr_losses" % prefix, count_losses)
-        _run.log_scalar("%s_pos_att_losses" % prefix, pos_losses)
-        _run.log_scalar("%s_neg_att_losses" % prefix, neg_losses)
+        _run.log_scalar("test_%s_batch_losses" % prefix, batch_losses)
+        _run.log_scalar("test_%s_corr_losses" % prefix, corr_losses)
+        _run.log_scalar("test_%s_att_losses" % prefix, att_losses)
+        _run.log_scalar("test_%s_prof_corr_losses" % prefix, prof_losses)
+        _run.log_scalar("test_%s_count_corr_losses" % prefix, count_losses)
+        _run.log_scalar("test_%s_pos_att_losses" % prefix, pos_losses)
+        _run.log_scalar("test_%s_neg_att_losses" % prefix, neg_losses)
 
         metrics = profile_performance.compute_performance_metrics(
             true_profs, log_pred_profs, true_counts, log_pred_counts
@@ -495,23 +494,33 @@ def train_model(
 
 
 @train_ex.command
-def run_training(train_peak_beds, val_peak_beds, profile_hdf5):
+def run_training(
+    peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms
+):
     train_loader = make_profile_dataset.create_data_loader(
-        train_peak_beds, profile_hdf5, "SamplingCoordsBatcher",
-        return_coords=True
+        peak_beds, profile_hdf5, "SamplingCoordsBatcher",
+        return_coords=True, chrom_set=train_chroms
     )
     val_loader = make_profile_dataset.create_data_loader(
-        val_peak_beds, profile_hdf5, "SamplingCoordsBatcher",
-        return_coords=True
+        peak_beds, profile_hdf5, "SamplingCoordsBatcher",
+        return_coords=True, chrom_set=val_chroms
     )
-    summit_loader = make_profile_dataset.create_data_loader(
-        val_peak_beds, profile_hdf5, "SummitCenteringCoordsBatcher",
-        return_coords=True, revcomp=False
+    test_summit_loader = make_profile_dataset.create_data_loader(
+        peak_beds, profile_hdf5, "SummitCenteringCoordsBatcher",
+        return_coords=True, revcomp=False, chrom_set=test_chroms
     )
-    peak_loader = make_profile_dataset.create_data_loader(
-        val_peak_beds, profile_hdf5, "PeakTilingCoordsBatcher"
+    test_peak_loader = make_profile_dataset.create_data_loader(
+        peak_beds, profile_hdf5, "PeakTilingCoordsBatcher",
+        return_coords=True, chrom_set=test_chroms
     )
-    train_model(train_loader, val_loader, summit_loader, peak_loader)
+    test_genome_loader = make_profile_dataset.create_data_loader(
+        peak_beds, profile_hdf5, "SamplingCoordsBatcher", return_coords=True,
+        chrom_set=test_chroms
+    )
+    train_model(
+        train_loader, val_loader, test_summit_loader, test_peak_loader,
+        test_genome_loader
+    )
 
 
 @train_ex.automain
@@ -520,9 +529,14 @@ def main():
     paths_json_path = "/users/amtseng/att_priors/data/processed/ENCODE/profile/config/SPI1/SPI1_training_paths.json"
     with open(paths_json_path, "r") as f:
         paths_json = json.load(f)
-
-    train_peak_beds = paths_json["train_peak_beds"]
-    val_peak_beds = paths_json["val_peak_beds"]
+    peak_beds = paths_json["peak_beds"]
     profile_hdf5 = paths_json["profile_hdf5"]
 
-    run_training(train_peak_beds, val_peak_beds, profile_hdf5)
+    splits_json_path = "/users/amtseng/att_priors/data/processed/chrom_splits.json"
+    with open(splits_json_path, "r") as f:
+        splits_json = json.load(f)
+    train_chroms, val_chroms, test_chroms = \
+        splits_json["1"]["train"], splits_json["1"]["val"], \
+        splits_json["1"]["test"]
+
+    run_training(peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms)
