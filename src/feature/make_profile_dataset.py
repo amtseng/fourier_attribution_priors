@@ -43,11 +43,26 @@ def config():
     # Probability of noising/varying a positive example
     noise_prob = 0
 
+    # Probability of dropping a positive example
+    drop_prob = 0
+
     # Number of workers for the data loader
     num_workers = 10
 
-    # Dataset seed (for shuffling)
-    dataset_seed = None
+    # Negative seed (for selecting negatives)
+    negative_seed = None
+
+    # Jitter seed (for applying random jitter to peaks)
+    jitter_seed = None
+
+    # Shuffle seed (for shuffling data points)
+    shuffle_seed = None
+
+    # Noise seed (for noising data)
+    noise_seed = None
+
+    # Drop seed (for dropping data)
+    drop_seed = None
 
 
 class GenomeIntervalSampler:
@@ -75,8 +90,7 @@ class GenomeIntervalSampler:
         chrom_table["weight"] = chrom_table["size"] / chrom_table["size"].sum()
         self.chrom_table = chrom_table
 
-        if seed:
-            np.random.seed(seed)
+        self.rng = np.random.RandomState(seed)
 
     def sample_intervals(self, num_intervals):
         """
@@ -86,10 +100,11 @@ class GenomeIntervalSampler:
         chrom_sample = self.chrom_table.sample(
             n=num_intervals,
             replace=True,
-            weights=self.chrom_table["weight"]
+            weights=self.chrom_table["weight"],
+            random_state=self.rng
         )
         chrom_sample["start"] = \
-            (np.random.rand(num_intervals) * chrom_sample["size"]).astype(int)
+            (self.rng.rand(num_intervals) * chrom_sample["size"]).astype(int)
         chrom_sample["end"] = chrom_sample["start"] + self.sample_length
 
         return chrom_sample[["chrom", "start", "end"]].values.astype(object)
@@ -162,6 +177,10 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
             the coordinate BEDs
         `noise_prob`: probability of corruption for a positive example; a
             roughly equal number of negatives are also corrupted
+        `drop_prob`: probability of dropping a positive example; this fraction
+            of positive examples will not be yielded by the data loader; the
+            amount of negatives is determined by `neg_ratio`, after the dropping
+            of positives
         `return_peaks`: if True, returns the peaks and summits sampled from the
             peak set as a B x 3 array
         `shuffle_before_epoch`: Whether or not to shuffle all examples before
@@ -169,8 +188,9 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
     """
     def __init__(
         self, pos_coords_beds, batch_size, neg_ratio, jitter, genome_sampler,
-        noise_prob=0, chroms_keep=None, return_peaks=False,
-        shuffle_before_epoch=False, seed=None
+        noise_prob=0, drop_prob=0, chroms_keep=None, return_peaks=False,
+        shuffle_before_epoch=False, jitter_seed=None, shuffle_seed=None,
+        noise_seed=None, drop_seed=None
     ):
         self.batch_size = batch_size
         self.neg_ratio = neg_ratio
@@ -202,6 +222,16 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
             )
             all_pos_table.append(coords)
         self.all_pos_table = np.concatenate(all_pos_table)  # Shape: N x 7
+
+        # Randomly select a set of positives to drop
+        if drop_prob:
+            num_to_keep = int(len(self.all_pos_table) * (1 - drop_prob))
+            drop_rng = np.random.RandomState(drop_seed)
+            rand_mask = drop_rng.choice(
+                len(self.all_pos_table), size=num_to_keep, replace=False
+            )
+            self.all_pos_table = self.all_pos_table[rand_mask]
+
         self.num_total_pos = len(self.all_pos_table)
 
         # Randomly select a subset of the sample coordinates and assign them
@@ -209,8 +239,11 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         # This creates an N x 3 array, where each entry is either the original
         # coordinate, or a randomly selected coordinate
         if noise_prob:
+            # Random number generator for noising
+            self.noise_rng = np.random.RandomState(noise_seed)
+
             num_to_noise = int(noise_prob * self.num_total_pos)
-            rand_mask = np.random.choice(
+            rand_mask = self.noise_rng.choice(
                 self.num_total_pos, size=num_to_noise, replace=False
             )
             neg_coords = genome_sampler.sample_intervals(num_to_noise)
@@ -225,7 +258,10 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         self.pos_per_batch = batch_size - self.neg_per_batch
 
         if shuffle_before_epoch:
-            self.rng = np.random.RandomState(seed)
+            self.shuffle_rng = np.random.RandomState(shuffle_seed)
+
+        if self.jitter:
+            self.jitter_rng = np.random.RandomState(jitter_seed)
 
     def __getitem__(self, index):
         """
@@ -254,7 +290,7 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
 
         # If specified, apply random jitter to each positive coordinate
         if self.jitter:
-            jitter_vals = np.random.randint(
+            jitter_vals = self.jitter_rng.randint(
                 -self.jitter, self.jitter + 1, size=len(pos_coords)
             )
             pos_coords[:, 1] += jitter_vals
@@ -284,12 +320,12 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
             # For negatives, pick a subset of the negative coordinates and
             # assign them coordinates of randomly selected positives
             num_to_noise = int(self.noise_prob * len(neg_coords))
-            pos_rand_mask = np.random.choice(
+            pos_rand_mask = self.noise_rng.choice(
                 self.num_total_pos, size=num_to_noise, replace=False
             )
             pos_sample = self.all_pos_table[pos_rand_mask, :3]
             neg_noise_coords = neg_coords.copy()
-            neg_rand_mask = np.random.choice(
+            neg_rand_mask = self.noise_rng.choice(
                 len(neg_coords), size=num_to_noise, replace=False
             )
             neg_noise_coords[neg_rand_mask] = pos_sample
@@ -324,7 +360,7 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
    
     def on_epoch_start(self):
         if self.shuffle_before_epoch:
-            perm = self.rng.permutation(self.num_total_pos)
+            perm = self.shuffle_rng.permutation(self.num_total_pos)
             self.all_pos_table = self.all_pos_table[perm]
             if self.noise_prob:
                 self.pos_noise_coords = self.pos_noise_coords[perm]
@@ -347,7 +383,7 @@ class SummitCenteringCoordsBatcher(SamplingCoordsBatcher):
     """
     def __init__(
         self, pos_coords_beds, batch_size, chroms_keep=None, return_peaks=False,
-        shuffle_before_epoch=False, seed=None
+        shuffle_before_epoch=False, shuffle_seed=None
     ):
         # Same as a normal SamplingCoordsBatcher, but with no negatives and no
         # jitter, since the coordinates in the positive coordinate BEDs are
@@ -361,7 +397,7 @@ class SummitCenteringCoordsBatcher(SamplingCoordsBatcher):
             chroms_keep=chroms_keep,
             return_peaks=return_peaks,
             shuffle_before_epoch=shuffle_before_epoch,
-            seed=seed
+            shuffle_seed=shuffle_seed
         )
 
         
@@ -383,7 +419,7 @@ class PeakTilingCoordsBatcher(SamplingCoordsBatcher):
     """
     def __init__(
         self, pos_coords_beds, stride, batch_size, chroms_keep=None,
-        return_peaks=False, shuffle_before_epoch=False, seed=None
+        return_peaks=False, shuffle_before_epoch=False, shuffle_seed=None
     ):
         self.stride = stride
         self.batch_size = batch_size
@@ -447,7 +483,7 @@ class PeakTilingCoordsBatcher(SamplingCoordsBatcher):
         self.pos_per_batch = self.batch_size
 
         if shuffle_before_epoch:
-            self.rng = np.random.RandomState(seed)
+            self.shuffle_rng = np.random.RandomState(shuffle_seed)
 
 
 class CoordDataset(torch.utils.data.IterableDataset):
@@ -565,8 +601,9 @@ class CoordDataset(torch.utils.data.IterableDataset):
 def create_data_loader(
     peaks_bed_paths, profile_hdf5_path, sampling_type, batch_size,
     reference_fasta, chrom_sizes, input_length, profile_length, negative_ratio,
-    peak_tiling_stride, noise_prob, num_workers, revcomp, jitter_size,
-    dataset_seed, chrom_set=None, shuffle=True, return_coords=False
+    peak_tiling_stride, noise_prob, drop_prob, num_workers, revcomp,
+    jitter_size, negative_seed, shuffle_seed, jitter_seed, noise_seed,
+    drop_seed, chrom_set=None, shuffle=True, return_coords=False
 ):
     """
     Creates an IterableDataset object, which iterates through batches of
@@ -601,28 +638,29 @@ def create_data_loader(
     if sampling_type == "SamplingCoordsBatcher":
         # Randomly samples from genome
         genome_sampler = GenomeIntervalSampler(
-            chrom_sizes, input_length, chroms_keep=chrom_set, seed=dataset_seed
+            chrom_sizes, input_length, chroms_keep=chrom_set, seed=negative_seed
         )
         # Yields batches of positive and negative coordinates
         coords_batcher = SamplingCoordsBatcher(
             peaks_bed_paths, batch_size, negative_ratio, jitter_size,
-            genome_sampler, noise_prob, chroms_keep=chrom_set,
+            genome_sampler, noise_prob, drop_prob, chroms_keep=chrom_set,
             return_peaks=return_coords, shuffle_before_epoch=shuffle,
-            seed=dataset_seed
+            jitter_seed=jitter_seed, shuffle_seed=shuffle_seed,
+            noise_seed=noise_seed, drop_seed=drop_seed
         )
     elif sampling_type == "SummitCenteringCoordsBatcher":
         # Yields batches of positive coordinates, centered at summits
         coords_batcher = SummitCenteringCoordsBatcher(
             peaks_bed_paths, batch_size, chroms_keep=chrom_set,
             return_peaks=return_coords, shuffle_before_epoch=shuffle,
-            seed=dataset_seed
+            shuffle_seed=shuffle_seed
         )
     else:
         # Yields batches of positive coordinates, tiled across peaks
         coords_batcher = PeakTilingCoordsBatcher(
             peaks_bed_paths, peak_tiling_stride, batch_size,
             chroms_keep=chrom_set, return_peaks=return_coords,
-            shuffle_before_epoch=shuffle, seed=dataset_seed
+            shuffle_before_epoch=shuffle, shuffle_seed=shuffle_seed
         )
 
     # Maps set of coordinates to 1-hot encoding, padded
@@ -669,15 +707,16 @@ def main():
         splits_json["1"]["test"]
 
     loader = create_data_loader(
-        peak_beds, profile_hdf5, "SamplingCoordsBatcher",
-        return_coords=True, noise_prob=0.9, chrom_set=val_chroms
+        peak_beds, profile_hdf5, "SummitCenteringCoordsBatcher",
+        return_coords=True, noise_prob=0.5, drop_prob=0.7, chrom_set=val_chroms,
+        jitter_size=128, jitter_seed=123, noise_seed=125, drop_seed=123,
+        shuffle_seed=123, negative_seed=123
     )
     loader.dataset.on_epoch_start()
 
     start_time = datetime.now()
     for batch in tqdm.tqdm(loader, total=len(loader.dataset)):
         data = batch
-        break
     end_time = datetime.now()
     print("Time: %ds" % (end_time - start_time).seconds)
 
@@ -691,9 +730,13 @@ def main():
 
     coord, peak = coords[k], peaks[k]
     rc_coord, rc_peak = coords[rc_k], peaks[rc_k]
-    
-    print(util.one_hot_to_seq(seq))
-    print(util.one_hot_to_seq(rc_seq))
+
+    def print_one_hot_seq(one_hot):
+        s = util.one_hot_to_seq(one_hot)
+        print(s[:20] + "..." + s[-20:])
+   
+    print_one_hot_seq(seq)
+    print_one_hot_seq(rc_seq)
 
     print(status, rc_status)
 
