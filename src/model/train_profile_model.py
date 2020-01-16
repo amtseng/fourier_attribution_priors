@@ -503,7 +503,8 @@ def run_training(
     )
     val_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SamplingCoordsBatcher",
-        return_coords=True, chrom_set=val_chroms
+        return_coords=True, chrom_set=val_chroms, noise_prob=0, drop_prob=0
+        # In general, we shouldn't be noising/dropping for validation purposes
     )
     test_summit_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SummitCenteringCoordsBatcher",
