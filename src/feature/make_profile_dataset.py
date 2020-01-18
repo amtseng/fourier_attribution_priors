@@ -14,7 +14,7 @@ def config():
     reference_fasta = "/users/amtseng/genomes/hg38.fasta"
 
     # Path to chromosome sizes
-    chrom_sizes = "/users/amtseng/genomes/hg38.canon.chrom.sizes"
+    chrom_sizes_tsv = "/users/amtseng/genomes/hg38.canon.chrom.sizes"
 
     # The size of DNA sequences to fetch as input sequences
     input_length = 1346
@@ -40,11 +40,9 @@ def config():
     # Use this stride when tiling coordinates across a peak
     peak_tiling_stride = 25
 
-    # Probability of noising/varying a positive example
-    noise_prob = 0
-
-    # Probability of dropping a positive example
-    drop_prob = 0
+    # Amount of dataset for each task to keep; can be a set number of peaks, or
+    # a fraction (if < 1); set to None to keep everything
+    peak_retention = None
 
     # Number of workers for the data loader
     num_workers = 10
@@ -58,12 +56,6 @@ def config():
     # Shuffle seed (for shuffling data points)
     shuffle_seed = None
 
-    # Noise seed (for noising data)
-    noise_seed = None
-
-    # Drop seed (for dropping data)
-    drop_seed = None
-
 
 class GenomeIntervalSampler:
     """
@@ -71,26 +63,39 @@ class GenomeIntervalSampler:
     uniformly at random (i.e. longer chromosomes are more likely to be sampled
     from).
     Arguments:
-        `chrom_sizes`: path to 2-column TSV listing sizes of each chromosome
+        `chrom_sizes_tsv`: path to 2-column TSV listing sizes of each chromosome
         `sample_length`: length of sampled sequence
         `chroms_keep`: an iterable of chromosomes that specifies which
             chromosomes to keep from the sizes; sampling will only occur from
             these chromosomes
     """
-    def __init__(self, chrom_sizes, sample_length, chroms_keep=None, seed=None):
+    def __init__(
+        self, chrom_sizes_tsv, sample_length, chroms_keep=None, seed=None
+    ):
         self.sample_length = sample_length
        
         # Create DataFrame of chromosome sizes
-        chrom_table = pd.read_csv(
-            chrom_sizes, sep="\t", header=None, names=["chrom", "size"]
-        )
+        chrom_table = self._import_chrom_sizes(chrom_sizes_tsv)
         if chroms_keep:
             chrom_table = chrom_table[chrom_table["chrom"].isin(chroms_keep)]
-        chrom_table["size"] -= sample_length  # Cut off sizes to avoid overrun
-        chrom_table["weight"] = chrom_table["size"] / chrom_table["size"].sum()
+        # Cut off sizes to avoid overrunning ends of chromosome
+        chrom_table["max_size"] -= sample_length
+        chrom_table["weight"] = \
+            chrom_table["max_size"] / chrom_table["max_size"].sum()
         self.chrom_table = chrom_table
 
         self.rng = np.random.RandomState(seed)
+
+    def _import_chrom_sizes(self, chrom_sizes_tsv):
+        """
+        Imports a TSV of chromosome sizes, mapping chromosome to maximum size.
+        Arguments:
+            `chrom_sizes_tsv`: a 2-column TSV mapping chromosome name to size
+        Returns a Pandas DataFrame
+        """
+        return pd.read_csv(
+            chrom_sizes_tsv, sep="\t", header=None, names=["chrom", "max_size"]
+        )
 
     def sample_intervals(self, num_intervals):
         """
@@ -103,8 +108,9 @@ class GenomeIntervalSampler:
             weights=self.chrom_table["weight"],
             random_state=self.rng
         )
-        chrom_sample["start"] = \
-            (self.rng.rand(num_intervals) * chrom_sample["size"]).astype(int)
+        chrom_sample["start"] = (
+            self.rng.rand(num_intervals) * chrom_sample["max_size"]
+        ).astype(int)
         chrom_sample["end"] = chrom_sample["start"] + self.sample_length
 
         return chrom_sample[["chrom", "start", "end"]].values.astype(object)
@@ -167,91 +173,59 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
     given, the coordinates are all pooled together and drawn from uniformly.
     Arguments:
         `pos_coords_beds`: list of paths to gzipped BED files containing the
-            sets of positive coordinates for various tasks
+            sets of positive coordinates for various tasks; these BED files
+            should be in ENCODE NarrowPeak format
         `batch_size`: number of samples per batch
         `neg_ratio`: number of negatives to select for each positive example
-        `jitter`: random amount to jitter each positive coordinate example by
+        `jitter`: maximum random amount to jitter each positive coordinate
+            example by
+        `chrom_sizes_tsv`: path to 2-column TSV listing sizes of each chromosome
+        `sample_length`: length of sampled sequence
         `genome_sampler`: a GenomeIntervalSampler instance, which samples
             intervals randomly from the genome
         `chroms_keep`: if specified, only considers this set of chromosomes from
             the coordinate BEDs
-        `noise_prob`: probability of corruption for a positive example; a
-            roughly equal number of negatives are also corrupted
-        `drop_prob`: probability of dropping a positive example; this fraction
-            of positive examples will not be yielded by the data loader; the
-            amount of negatives is determined by `neg_ratio`, after the dropping
-            of positives
+        `peak_retention`: if specified, keeps only this amount of peaks (taking
+            most confident peaks preferentially); can be a fraction of the
+            original BED file (if value is < 1), or a number of peaks (if value
+            is >= 1)
         `return_peaks`: if True, returns the peaks and summits sampled from the
             peak set as a B x 3 array
         `shuffle_before_epoch`: Whether or not to shuffle all examples before
             each epoch
     """
     def __init__(
-        self, pos_coords_beds, batch_size, neg_ratio, jitter, genome_sampler,
-        noise_prob=0, drop_prob=0, chroms_keep=None, return_peaks=False,
-        shuffle_before_epoch=False, jitter_seed=None, shuffle_seed=None,
-        noise_seed=None, drop_seed=None
+        self, pos_coords_beds, batch_size, neg_ratio, jitter, chrom_sizes_tsv,
+        sample_length, genome_sampler, chroms_keep=None, peak_retention=None,
+        return_peaks=False, shuffle_before_epoch=False, jitter_seed=None,
+        shuffle_seed=None
     ):
         self.batch_size = batch_size
         self.neg_ratio = neg_ratio
         self.jitter = jitter
         self.genome_sampler = genome_sampler
-        self.chroms_keep = chroms_keep
-        self.noise_prob = noise_prob
         self.return_peaks = return_peaks
         self.shuffle_before_epoch = shuffle_before_epoch
 
-        # Read in the positive coordinates and make an N x 7 array, where the
-        # 7th column is the identifier of the source BED
-        # Cols 1-3 should be the coordinate, 4-5 are the original peak location,
-        # and col 6 is the summit location
+        chrom_sizes_table = self._import_chrom_sizes(chrom_sizes_tsv)
+
         all_pos_table = []
         for i, pos_coords_bed in enumerate(pos_coords_beds):
-            pos_coords_table = pd.read_csv(
-                pos_coords_bed, sep="\t", header=None, compression="gzip"
+            peaks_table = self._import_peaks(pos_coords_bed)
+            coords = self._format_peaks_table(
+                peaks_table, chroms_keep, peak_retention, sample_length, jitter,
+                chrom_sizes_table
             )
-            if chroms_keep:
-                # Keep only chromosomes specified
-                pos_coords_table = pos_coords_table[
-                    pos_coords_table[0].isin(chroms_keep)
-                ]
-
-            coords = pos_coords_table.values.astype(object)
+            
+            # Add in the status column
             coords = np.concatenate(
                 [coords, np.tile(i + 1, (len(coords), 1))], axis=1
-            )
+            )  # Shape: _ x 7
+            
             all_pos_table.append(coords)
+
         self.all_pos_table = np.concatenate(all_pos_table)  # Shape: N x 7
-
-        # Randomly select a set of positives to drop
-        if drop_prob:
-            num_to_keep = int(len(self.all_pos_table) * (1 - drop_prob))
-            drop_rng = np.random.RandomState(drop_seed)
-            rand_mask = drop_rng.choice(
-                len(self.all_pos_table), size=num_to_keep, replace=False
-            )
-            self.all_pos_table = self.all_pos_table[rand_mask]
-
         self.num_total_pos = len(self.all_pos_table)
-
-        # Randomly select a subset of the sample coordinates and assign them
-        # a coordinate selected randomly from the genome
-        # This creates an N x 3 array, where each entry is either the original
-        # coordinate, or a randomly selected coordinate
-        if noise_prob:
-            # Random number generator for noising
-            self.noise_rng = np.random.RandomState(noise_seed)
-
-            num_to_noise = int(noise_prob * self.num_total_pos)
-            rand_mask = self.noise_rng.choice(
-                self.num_total_pos, size=num_to_noise, replace=False
-            )
-            neg_coords = genome_sampler.sample_intervals(num_to_noise)
-            self.pos_noise_coords = self.all_pos_table[:, :3].copy()
-            self.pos_noise_coords[rand_mask] = neg_coords
-
-            # Set the source BED identifier to be negative when noised
-            self.all_pos_table[rand_mask, 6] *= -1
 
         # Number of positives and negatives per batch
         self.neg_per_batch = int(batch_size * neg_ratio / (neg_ratio + 1))
@@ -262,6 +236,91 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
 
         if self.jitter:
             self.jitter_rng = np.random.RandomState(jitter_seed)
+
+    def _import_peaks(self, peaks_bed):
+        """
+        Imports a peaks BED file in NarrowPeak format as a Pandas DataFrame.
+        Arguments:
+            `peaks_bed`: a BED file (gzipped or not) containing peaks in
+                ENCODE NarrowPeak format
+        Returns a Pandas DataFrame
+        """
+        return pd.read_csv(
+            peaks_bed, sep="\t", header=None,  # Infer compression
+            names=[
+                "chrom", "peak_start", "peak_end", "name", "score",
+                "strand", "signal", "pval", "qval", "summit_offset"
+            ]
+        )
+
+    def _import_chrom_sizes(self, chrom_sizes_tsv):
+        """
+        Imports a TSV of chromosome sizes, mapping chromosome to maximum size.
+        Arguments:
+            `chrom_sizes_tsv`: a 2-column TSV mapping chromosome name to size
+        Returns a Pandas DataFrame
+        """
+        return pd.read_csv(
+            chrom_sizes_tsv, sep="\t", header=None, names=["chrom", "max_size"]
+        )
+
+    def _format_peaks_table(
+        self, peaks_table, chroms_keep, peak_retention, sample_length, jitter,
+        chrom_sizes_table
+    ):
+        """
+        Takes a table of imported peaks and formats it. This function performs
+        the following tasks:
+        1. Optionally filters peaks to only retain a subset of chromosomes
+        2. Optionally cuts down the set of peaks to a subset of high-confidence
+            peaks
+        3. Computes the intervals for inputs being centered around the summits
+        4. Drops any intervals that would overrun chromosome boundaries
+        Arguments:
+            `peaks_table`: a table imported by `_import_peaks`
+            `chrom_sizes_table`: a table imported by `_import_chrom_sizes`
+        Returns an N x 6 array, where columns 1-3 are the coordinate of the
+        input samples centered at summits, columns 4-5 are the original peak
+        location, and column 6 is the summit location.
+        """
+        if chroms_keep:
+            # Keep only chromosomes specified
+            peaks_table = peaks_table[peaks_table["chrom"].isin(chroms_keep)]
+
+        if peak_retention is not None:
+            # Keep only a subset of the peaks in the table
+            # Sort coordinates by confidence first
+            peaks_table = peaks_table.sort_values(by="signal", ascending=False)
+
+            keep_num = int(len(peaks_table) * peak_retention) if \
+                peak_retention < 1 else peak_retention
+            peaks_table = peaks_table.head(keep_num)
+
+        # Expand the coordinates to be of size `sample_length`, centered
+        # around the summits
+        peaks_table["start"] = peaks_table["peak_start"] + \
+            peaks_table["summit_offset"] - (sample_length // 2)
+        peaks_table["end"] = peaks_table["start"] + sample_length
+
+        # Toss out any coordinates that (with jittering) may go past
+        # chromosome boundaries
+        # Add in the maximum size column
+        peaks_table = peaks_table.merge(chrom_sizes_table, on="chrom")
+        # Keep only coordinates that won't overrun the ends
+        left_mask = peaks_table["start"] - jitter >= 0
+        right_mask = peaks_table["end"] + jitter < peaks_table["max_size"]
+        peaks_table = peaks_table.loc[left_mask & right_mask]
+
+        # Compute the summit location from offset and peak start
+        peaks_table["summit"] = peaks_table["peak_start"] + \
+            peaks_table["summit_offset"]
+
+        # Extract the columns desired
+        coords = peaks_table[[
+            "chrom", "start", "end", "peak_start", "peak_end", "summit"
+        ]].values.astype(object)
+
+        return coords
 
     def __getitem__(self, index):
         """
@@ -277,10 +336,6 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         peaks, consisting of the peak boundaries and the summit location
         (respectively); for negative samples drawn from the GenomeSampler, these
         values are all -1.
-        If `noise_prob` was nonzero at object creation-time, coordinates will be
-        a B x 6 2D NumPy array, where the first 3 columns are the original
-        coordinate, and the next 3 columns are a randomly selected coordinate
-        or the same coordinate.
         """
         pos_table = self.all_pos_table[
             index * self.pos_per_batch : (index + 1) * self.pos_per_batch
@@ -305,50 +360,16 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
             neg_coords = np.empty(shape=(0, 3), dtype=object)
 
         # At this point, `pos_coords` and `neg_coords` are both _ x 3
-
         # Concatenate the coordinates together
-        if self.noise_prob:
-            # If noising is to be done, add in the noisy coordinates as another
-            # 3 columns, making a B x 6 array
-
-            # Noising for positives was done in __init__; just fetch the
-            # corresponding batch
-            pos_noise_coords = self.pos_noise_coords[
-                index * self.pos_per_batch : (index + 1) * self.pos_per_batch
-            ]
-            
-            # For negatives, pick a subset of the negative coordinates and
-            # assign them coordinates of randomly selected positives
-            num_to_noise = int(self.noise_prob * len(neg_coords))
-            pos_rand_mask = self.noise_rng.choice(
-                self.num_total_pos, size=num_to_noise, replace=False
-            )
-            pos_sample = self.all_pos_table[pos_rand_mask, :3]
-            neg_noise_coords = neg_coords.copy()
-            neg_rand_mask = self.noise_rng.choice(
-                len(neg_coords), size=num_to_noise, replace=False
-            )
-            neg_noise_coords[neg_rand_mask] = pos_sample
-
-            clean_coords = np.concatenate([pos_coords, neg_coords], axis=0)
-            noise_coords = np.concatenate(
-                [pos_noise_coords, neg_noise_coords], axis=0
-            )
-            coords = np.concatenate([clean_coords, noise_coords], axis=1)
-        else:
-            # Without noising, just concatenate the positive and negative
-            # coordinates, making a B x 3 array
-            coords = np.concatenate([pos_coords, neg_coords], axis=0)
+        coords = np.concatenate([pos_coords, neg_coords], axis=0)
 
         # Concatenate the statuses together; status for negatives is just 0
-        # If noising was done, some of these statuses will be negative
         status = np.concatenate(
             [pos_statuses, np.zeros(len(neg_coords))]  # Col 7
         ).astype(int)
 
         if self.return_peaks:
             # Concatenate the peaks together; peaks for negatives is all -1
-            # If noising was done, the original peaks for positives are retained
             neg_peaks = np.full((len(neg_coords), 3), -1)
             peaks = np.concatenate([pos_peaks, neg_peaks])
             return coords, status, peaks
@@ -362,8 +383,6 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         if self.shuffle_before_epoch:
             perm = self.shuffle_rng.permutation(self.num_total_pos)
             self.all_pos_table = self.all_pos_table[perm]
-            if self.noise_prob:
-                self.pos_noise_coords = self.pos_noise_coords[perm]
 
 
 class SummitCenteringCoordsBatcher(SamplingCoordsBatcher):
@@ -376,14 +395,17 @@ class SummitCenteringCoordsBatcher(SamplingCoordsBatcher):
         `batch_size`: number of samples per batch
         `chroms_keep`: if specified, only considers this set of chromosomes from
             the coordinate BEDs
+        `chrom_sizes_tsv`: path to 2-column TSV listing sizes of each chromosome
+        `sample_length`: length of sampled sequence
         `return_peaks`: if True, returns the peaks and summits sampled from the
             peak set as a B x 3 array
         `shuffle_before_epoch`: Whether or not to shuffle all examples before
             each epoch
     """
     def __init__(
-        self, pos_coords_beds, batch_size, chroms_keep=None, return_peaks=False,
-        shuffle_before_epoch=False, shuffle_seed=None
+        self, pos_coords_beds, batch_size, chrom_sizes_tsv, sample_length,
+        chroms_keep=None, return_peaks=False, shuffle_before_epoch=False,
+        shuffle_seed=None
     ):
         # Same as a normal SamplingCoordsBatcher, but with no negatives and no
         # jitter, since the coordinates in the positive coordinate BEDs are
@@ -393,6 +415,8 @@ class SummitCenteringCoordsBatcher(SamplingCoordsBatcher):
             batch_size=batch_size,
             neg_ratio=0,
             jitter=0,
+            chrom_sizes_tsv=chrom_sizes_tsv,
+            sample_length=sample_length,
             genome_sampler=None,
             chroms_keep=chroms_keep,
             return_peaks=return_peaks,
@@ -410,6 +434,8 @@ class PeakTilingCoordsBatcher(SamplingCoordsBatcher):
             sets of positive coordinates for various tasks
         `stride`: amount of stride when tiling the coordinates
         `batch_size`: number of samples per batch
+        `chrom_sizes_tsv`: path to 2-column TSV listing sizes of each chromosome
+        `sample_length`: length of sampled sequence
         `chroms_keep`: if specified, only considers this set of chromosomes from
             the coordinate BEDs
         `return_peaks`: if True, returns the peaks and summits sampled from the
@@ -418,63 +444,58 @@ class PeakTilingCoordsBatcher(SamplingCoordsBatcher):
             each epoch
     """
     def __init__(
-        self, pos_coords_beds, stride, batch_size, chroms_keep=None,
-        return_peaks=False, shuffle_before_epoch=False, shuffle_seed=None
+        self, pos_coords_beds, stride, batch_size, chrom_sizes_tsv,
+        sample_length, chroms_keep=None, return_peaks=False,
+        shuffle_before_epoch=False, shuffle_seed=None
     ):
-        self.stride = stride
+        # Similar to normal SamplingCoordsBatcher, but with no negatives and no
+        # jitter; initialization is similar, but replicate the peaks so that
+        # there are many summits tiled across each peak
         self.batch_size = batch_size
         self.jitter = 0
-        self.noise_prob = 0
         self.chroms_keep = chroms_keep
         self.return_peaks = return_peaks
         self.shuffle_before_epoch = shuffle_before_epoch
 
-        # Read in the positive coordinates and make N x 4 array, containing only
-        # cols 1, 4-6, which are the original peak chromosome, start/end, and
-        # summit location, as well as a status indicating the original BED file
-        peak_coords = []
-        for i, pos_coords_bed in enumerate(pos_coords_beds):
-            pos_coords_table = pd.read_csv(
-                pos_coords_bed, sep="\t", header=None, compression="gzip",
-                usecols=[0, 3, 4, 5]
-            )
-            if chroms_keep:
-                # Keep only chromosomes specified
-                pos_coords_table = pos_coords_table[
-                    pos_coords_table[0].isin(chroms_keep)
-                ]
+        chrom_sizes_table = self._import_chrom_sizes(chrom_sizes_tsv)
 
-            coords = pos_coords_table.values.astype(object)
+        def tile_peaks(row):
+            peak_start, peak_end = row[1], row[2]
+            summit_offsets = np.arange(0, peak_end - peak_start, stride)
+            num_expand = len(summit_offsets)
+            row_expand = np.tile(row, (num_expand, 1))
+            row_expand[:, -1] = summit_offsets
+            return row_expand
+
+        all_pos_table = []
+        for i, pos_coords_bed in enumerate(pos_coords_beds):
+            peaks_table = self._import_peaks(pos_coords_bed)
+            
+            # Formatting peaks table will expand the peaks to the right sample
+            # length and filter for anything that overruns the chromosome
+            # boundaries, so perform replication before
+            peaks_values = peaks_table.values
+            expanded_peaks_values = np.concatenate([
+                tile_peaks(row) for row in peaks_values
+            ], axis=0)
+            expanded_peaks_table = pd.DataFrame.from_records(
+                expanded_peaks_values, columns=list(peaks_table)
+            )
+            
+            # Now format peaks table into N x 6 array
+            coords = self._format_peaks_table(
+                expanded_peaks_table, chroms_keep, None, sample_length, 0,
+                chrom_sizes_table
+            )
+            
+            # Add in the status column
             coords = np.concatenate(
                 [coords, np.tile(i + 1, (len(coords), 1))], axis=1
-            )
-            peak_coords.append(coords)
-        all_peak_coords = np.concatenate(peak_coords)
+            )  # Shape: _ x 7
+            
+            all_pos_table.append(coords)
 
-        # For each peak, tile a set of coordinate centers across the peak and
-        # make an N x 7 array
-        def tile_peak(peak_coord_row):
-            # Creates M x 7 array from a single length-4 row of all_peak_coords
-            # Result is chromosome (col 1), tiled coordinates (cols 2-3) where
-            # each coordinate is length 1, peak coordinates (cols 4-5), summit
-            # location (col 6), and status (col 7)
-            peak_start, peak_end = peak_coord_row[1], peak_coord_row[2]
-            coord_starts = np.expand_dims(
-                np.arange(peak_start, peak_end, stride), axis=1
-            )
-            coord_ends = coord_starts + 1
-            num_coords = len(coord_starts)
-            row_expand = np.tile(peak_coord_row, (num_coords, 1))
-            return np.concatenate([
-                row_expand[:, :1],
-                coord_starts,
-                coord_ends,
-                row_expand[:, 1:]
-            ], axis=1)
-
-        self.all_pos_table = np.concatenate(
-            [tile_peak(row) for row in all_peak_coords], axis=0
-        )
+        self.all_pos_table = np.concatenate(all_pos_table)  # Shape: N x 7
         self.num_total_pos = len(self.all_pos_table)
 
         # Number of positives and negatives per batch
@@ -520,7 +541,6 @@ class CoordDataset(torch.utils.data.IterableDataset):
         Returns a batch, which consists of an B x L x 4 NumPy array of 1-hot
         encoded sequence, an B x S x L x 2 NumPy array of profiles, and a 1D
         length-N NumPy array of statuses.
-        This function will also perform noising if specified.
         """
         # Get batch of coordinates for this index
         if self.return_coords:
@@ -528,21 +548,11 @@ class CoordDataset(torch.utils.data.IterableDataset):
         else:
             coords, status = self.coords_batcher[index]
 
-        # If noising was done, the set of coordinates is B x 6; the first half
-        # is coordinates to use for the sequence; the second half specifies
-        # where to get profiles
-        # Without noising, the set of coordinates is B x 3, for both sequence
-        # and profile
-        if self.coords_batcher.noise_prob:
-            seq_coords, prof_coords = coords[:, :3], coords[:, 3:]
-        else:
-            seq_coords, prof_coords = coords, coords
-
         # Map this batch of coordinates to 1-hot encoded sequences
-        seqs = self.coords_to_seq(seq_coords, revcomp=self.revcomp)
+        seqs = self.coords_to_seq(coords, revcomp=self.revcomp)
 
         # Map this batch of coordinates to the associated profiles
-        profiles = self.coords_to_vals(prof_coords)
+        profiles = self.coords_to_vals(coords)
         # These profiles are returned as B x L x S x 2, so transpose to get
         # B x S x L x 2
         profiles = np.swapaxes(profiles, 1, 2)
@@ -559,10 +569,10 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
         if self.return_coords:
             if self.revcomp:
-                coords_ret = np.concatenate([seq_coords, seq_coords])
+                coords_ret = np.concatenate([coords, coords])
                 peaks_ret = np.concatenate([peaks, peaks])
             else:
-                coords_ret, peaks_ret = seq_coords, peaks
+                coords_ret, peaks_ret = coords, peaks
             return seqs, profiles, status, coords_ret, peaks_ret
         else:
             return seqs, profiles, status
@@ -600,10 +610,10 @@ class CoordDataset(torch.utils.data.IterableDataset):
 @dataset_ex.capture
 def create_data_loader(
     peaks_bed_paths, profile_hdf5_path, sampling_type, batch_size,
-    reference_fasta, chrom_sizes, input_length, profile_length, negative_ratio,
-    peak_tiling_stride, noise_prob, drop_prob, num_workers, revcomp,
-    jitter_size, negative_seed, shuffle_seed, jitter_seed, noise_seed,
-    drop_seed, chrom_set=None, shuffle=True, return_coords=False
+    reference_fasta, chrom_sizes_tsv, input_length, profile_length,
+    negative_ratio, peak_tiling_stride, peak_retention, num_workers, revcomp,
+    jitter_size, negative_seed, shuffle_seed, jitter_seed, chrom_set=None,
+    shuffle=True, return_coords=False
 ):
     """
     Creates an IterableDataset object, which iterates through batches of
@@ -638,28 +648,29 @@ def create_data_loader(
     if sampling_type == "SamplingCoordsBatcher":
         # Randomly samples from genome
         genome_sampler = GenomeIntervalSampler(
-            chrom_sizes, input_length, chroms_keep=chrom_set, seed=negative_seed
+            chrom_sizes_tsv, input_length, chroms_keep=chrom_set,
+            seed=negative_seed
         )
         # Yields batches of positive and negative coordinates
         coords_batcher = SamplingCoordsBatcher(
             peaks_bed_paths, batch_size, negative_ratio, jitter_size,
-            genome_sampler, noise_prob, drop_prob, chroms_keep=chrom_set,
+            chrom_sizes_tsv, input_length, genome_sampler,
+            chroms_keep=chrom_set, peak_retention=peak_retention,
             return_peaks=return_coords, shuffle_before_epoch=shuffle,
-            jitter_seed=jitter_seed, shuffle_seed=shuffle_seed,
-            noise_seed=noise_seed, drop_seed=drop_seed
+            jitter_seed=jitter_seed, shuffle_seed=shuffle_seed
         )
     elif sampling_type == "SummitCenteringCoordsBatcher":
         # Yields batches of positive coordinates, centered at summits
         coords_batcher = SummitCenteringCoordsBatcher(
-            peaks_bed_paths, batch_size, chroms_keep=chrom_set,
-            return_peaks=return_coords, shuffle_before_epoch=shuffle,
-            shuffle_seed=shuffle_seed
+            peaks_bed_paths, batch_size, chrom_sizes_tsv, input_length,
+            chroms_keep=chrom_set, return_peaks=return_coords,
+            shuffle_before_epoch=shuffle, shuffle_seed=shuffle_seed
         )
     else:
         # Yields batches of positive coordinates, tiled across peaks
         coords_batcher = PeakTilingCoordsBatcher(
-            peaks_bed_paths, peak_tiling_stride, batch_size,
-            chroms_keep=chrom_set, return_peaks=return_coords,
+            peaks_bed_paths, peak_tiling_stride, batch_size, chrom_sizes_tsv,
+            input_length, chroms_keep=chrom_set, return_peaks=return_coords,
             shuffle_before_epoch=shuffle, shuffle_seed=shuffle_seed
         )
 
@@ -699,6 +710,10 @@ def main():
     peak_beds = paths_json["peak_beds"]
     profile_hdf5 = paths_json["profile_hdf5"]
 
+    peak_beds = [
+        "/mnt/lab_data2/amtseng/att_priors/data/raw/ENCODE/SPI1/tf_chipseq/ENCSR000BGQ_GM12878_peaks-optimal_ENCFF071ZMW.bed.gz"
+    ]
+
     splits_json_path = "/users/amtseng/att_priors/data/processed/chrom_splits.json"
     with open(splits_json_path, "r") as f:
         splits_json = json.load(f)
@@ -707,9 +722,9 @@ def main():
         splits_json["1"]["test"]
 
     loader = create_data_loader(
-        peak_beds, profile_hdf5, "SummitCenteringCoordsBatcher",
-        return_coords=True, noise_prob=0.5, drop_prob=0.7, chrom_set=val_chroms,
-        jitter_size=128, jitter_seed=123, noise_seed=125, drop_seed=123,
+        peak_beds, profile_hdf5, "SamplingCoordsBatcher",
+        return_coords=True, chrom_set=val_chroms,
+        jitter_size=128, jitter_seed=123, peak_retention=0.1,
         shuffle_seed=123, negative_seed=123
     )
     loader.dataset.on_epoch_start()
