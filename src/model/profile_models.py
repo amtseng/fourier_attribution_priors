@@ -324,7 +324,7 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             return final_loss
 
     def att_prior_loss(
-        self, status, input_grads, pos_limit, neg_weight,
+        self, status, input_grads, pos_limit, limit_softness, neg_weight,
         att_prior_grad_smooth_sigma, return_separate_losses=False
     ):
         """
@@ -341,6 +341,8 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             `pos_limit`: the maximum integer frequency index, k, to consider for
                 the positive loss; this corresponds to a frequency cut-off of
                 pi * k / L; k should be less than L / 2
+            `limit_softness`: amount to soften the limit by, using a hill
+                function; None means no softness
             `neg_weight`: the amount to weight the negative loss by, relative to
                 the positive loss
             `att_prior_grad_smooth_sigma`: amount to smooth the gradient before
@@ -367,8 +369,25 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             pos_mag_sum = torch.sum(pos_mags, dim=1, keepdim=True)
             pos_mag_sum[pos_mag_sum == 0] = 1  # Keep 0s when the sum is 0
             pos_mags = pos_mags / pos_mag_sum
-            # Cut off DC and high-frequency components:
-            pos_score = torch.sum(pos_mags[:, 1:pos_limit], dim=1)
+
+            # Cut off DC
+            pos_mags = pos_mags[:, 1:]
+
+            # Construct weight vector
+            weights = place_tensor(torch.ones_like(pos_mags))
+            if limit_softness is None:
+                weights[:, pos_limit:] = 0
+            else:
+                x = place_tensor(
+                    torch.arange(1, pos_mags.size(1) - pos_limit + 1)
+                ).float()
+                weights[:, pos_limit:] = 1 / (1 + torch.pow(x, limit_softness))
+
+            # Multiply frequency magnitudes by weights
+            pos_weighted_mags = pos_mags * weights
+
+            # Add up along frequency axis to get score
+            pos_score = torch.sum(pos_weighted_mags, dim=1)
             pos_loss = 1 - pos_score
             pos_loss_mean = torch.mean(pos_loss)
         else:

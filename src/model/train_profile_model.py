@@ -66,6 +66,10 @@ def config(dataset):
     # Maximum frequency integer to consider for a positive attribution prior
     att_prior_pos_limit = 160
 
+    # Amount to soften the attribution prior loss limit for positives; set to
+    # None to not soften; softness decays like 1 / (1 + x^c) after the limit
+    att_prior_pos_limit_softness = None
+
     # Weight for negatives within the attribution prior loss
     att_prior_neg_weight = 0
 
@@ -73,7 +77,7 @@ def config(dataset):
     num_epochs = 10
 
     # Learning rate
-    learning_rate = 0.004
+    learning_rate = 0.001
 
     # Whether or not to use early stopping
     early_stopping = True
@@ -139,7 +143,8 @@ def create_model(
 def model_loss(
     model, true_profs, log_pred_profs, log_pred_counts, status, input_grads,
     epoch_num, counts_loss_weight, att_prior_loss_weight,
-    att_prior_loss_weight_anneal, att_prior_pos_limit, att_prior_neg_weight,
+    att_prior_loss_weight_anneal, att_prior_pos_limit,
+    att_prior_pos_limit_softness, att_prior_neg_weight,
     att_prior_grad_smooth_sigma, att_prior_loss_only
 ):
     """
@@ -176,7 +181,8 @@ def model_loss(
             (prof_loss, count_loss), (torch.zeros(1), torch.zeros(1))
     
     att_prior_loss, pos_loss, neg_loss = model.att_prior_loss(
-        status, input_grads, att_prior_pos_limit, att_prior_neg_weight,
+        status, input_grads, att_prior_pos_limit,
+        att_prior_pos_limit_softness, att_prior_neg_weight,
         att_prior_grad_smooth_sigma, return_separate_losses=True
     )
 
@@ -292,7 +298,7 @@ def run_epoch(
                 input_grads_np = input_grads.detach().cpu().numpy()
             input_grads = input_grads * input_seqs  # Gradient * input
             status = util.place_tensor(torch.tensor(statuses))
-            status[status != 0] = 1  # Set to 1 if not true negative example
+            status[status != 0] = 1  # Set to 1 if not negative example
             input_seqs.requires_grad = False  # Reset gradient required
         else:
             logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
@@ -503,8 +509,8 @@ def run_training(
     )
     val_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SamplingCoordsBatcher",
-        return_coords=True, chrom_set=val_chroms, noise_prob=0, drop_prob=0
-        # In general, we shouldn't be noising/dropping for validation purposes
+        return_coords=True, chrom_set=val_chroms,
+        peak_retention=None  # Make sure we use the whole validation set
     )
     test_summit_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SummitCenteringCoordsBatcher",

@@ -710,10 +710,6 @@ def main():
     peak_beds = paths_json["peak_beds"]
     profile_hdf5 = paths_json["profile_hdf5"]
 
-    peak_beds = [
-        "/mnt/lab_data2/amtseng/att_priors/data/raw/ENCODE/SPI1/tf_chipseq/ENCSR000BGQ_GM12878_peaks-optimal_ENCFF071ZMW.bed.gz"
-    ]
-
     splits_json_path = "/users/amtseng/att_priors/data/processed/chrom_splits.json"
     with open(splits_json_path, "r") as f:
         splits_json = json.load(f)
