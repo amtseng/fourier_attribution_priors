@@ -324,7 +324,7 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             return final_loss
 
     def att_prior_loss(
-        self, status, input_grads, pos_limit, limit_softness, neg_weight,
+        self, status, input_grads, motif_preds, pos_limit, limit_softness, neg_weight,
         att_prior_grad_smooth_sigma, return_separate_losses=False
     ):
         """
@@ -359,53 +359,18 @@ class ProfileTFBindingPredictor(torch.nn.Module):
             abs_grads, att_prior_grad_smooth_sigma
         )
 
-        neg_grads = grads_smooth[status == 0]
-        pos_grads = grads_smooth[status == 1]
+        grads_sum = torch.sum(grads_smooth, dim=1, keepdim=True)
+        grads_sum[grads_sum == 0] = 1  # Keep 0s when the sum is 0
+        grads_norm = grads_smooth / grads_sum
 
-        # Loss for positives
-        if pos_grads.nelement():
-            pos_fft = torch.rfft(pos_grads, 1)
-            pos_mags = torch.norm(pos_fft, dim=2)
-            pos_mag_sum = torch.sum(pos_mags, dim=1, keepdim=True)
-            pos_mag_sum[pos_mag_sum == 0] = 1  # Keep 0s when the sum is 0
-            pos_mags = pos_mags / pos_mag_sum
-
-            # Cut off DC
-            pos_mags = pos_mags[:, 1:]
-
-            # Construct weight vector
-            weights = place_tensor(torch.ones_like(pos_mags))
-            if limit_softness is None:
-                weights[:, pos_limit:] = 0
-            else:
-                x = place_tensor(
-                    torch.arange(1, pos_mags.size(1) - pos_limit + 1)
-                ).float()
-                weights[:, pos_limit:] = 1 / (1 + torch.pow(x, limit_softness))
-
-            # Multiply frequency magnitudes by weights
-            pos_weighted_mags = pos_mags * weights
-
-            # Add up along frequency axis to get score
-            pos_score = torch.sum(pos_weighted_mags, dim=1)
-            pos_loss = 1 - pos_score
-            pos_loss_mean = torch.mean(pos_loss)
-        else:
-            pos_loss_mean = place_tensor(torch.zeros(1))
-
-        # Loss for negatives
-        if neg_weight > 0 and neg_grads.nelement():
-            neg_loss = torch.sum(neg_grads, dim=1)
-            neg_loss_mean = torch.mean(neg_loss)
-        else:
-            neg_loss_mean = place_tensor(torch.zeros(1))
-
-        final_loss = pos_loss_mean + (neg_weight * neg_loss_mean)
+        score = torch.sum(grads_norm * motif_preds, dim=1)
+        loss = 1 - score
+        loss_mean = torch.mean(loss)
 
         if return_separate_losses:
-            return final_loss, pos_loss_mean, neg_loss_mean
+            return loss_mean, loss_mean, loss_mean
         else:
-            return final_loss
+            return loss_mean
 
 
 def profile_logits_to_log_probs(logit_pred_profs, axis=2):

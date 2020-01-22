@@ -142,7 +142,7 @@ def create_model(
 @train_ex.capture
 def model_loss(
     model, true_profs, log_pred_profs, log_pred_counts, status, input_grads,
-    epoch_num, counts_loss_weight, att_prior_loss_weight,
+    motif_preds, epoch_num, counts_loss_weight, att_prior_loss_weight,
     att_prior_loss_weight_anneal, att_prior_pos_limit,
     att_prior_pos_limit_softness, att_prior_neg_weight,
     att_prior_grad_smooth_sigma, att_prior_loss_only
@@ -181,7 +181,7 @@ def model_loss(
             (prof_loss, count_loss), (torch.zeros(1), torch.zeros(1))
     
     att_prior_loss, pos_loss, neg_loss = model.att_prior_loss(
-        status, input_grads, att_prior_pos_limit,
+        status, input_grads, motif_preds, att_prior_pos_limit,
         att_prior_pos_limit_softness, att_prior_neg_weight,
         att_prior_grad_smooth_sigma, return_separate_losses=True
     )
@@ -189,8 +189,9 @@ def model_loss(
     if att_prior_loss_weight_anneal is None:
         weight = att_prior_loss_weight
     else:
-        weight = att_prior_loss_weight * \
-            ((2 / (1 + np.exp(-att_prior_loss_weight_anneal * epoch_num))) - 1)
+        # weight = att_prior_loss_weight * \
+        #     ((2 / (1 + np.exp(-att_prior_loss_weight_anneal * epoch_num))) - 1)
+        weight = att_prior_loss_weight * np.exp(-att_prior_loss_weight_anneal * epoch_num)
     if att_prior_loss_only:
         final_loss = att_prior_loss
     else:
@@ -263,11 +264,12 @@ def run_epoch(
         all_coords = np.empty((num_samples_exp, 3), dtype=object)
         num_samples_seen = 0  # Real number of samples seen
 
-    for input_seqs, profiles, statuses, coords, peaks in t_iter:
+    for input_seqs, profiles, motif_preds, statuses, coords, peaks in t_iter:
         if return_data:
             input_seqs_np = input_seqs
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
         profiles = util.place_tensor(torch.tensor(profiles)).float()
+        motif_preds = util.place_tensor(torch.tensor(motif_preds)).float()
 
         tf_profs = profiles[:, :num_tasks, :, :]
         cont_profs = profiles[:, num_tasks:, :, :]
@@ -307,7 +309,7 @@ def run_epoch(
         loss, (corr_loss, att_loss), (prof_loss, count_loss), \
             (pos_loss, neg_loss) = model_loss(
             model, tf_profs, logit_pred_profs, log_pred_counts, status,
-            input_grads, epoch_num
+            input_grads, motif_preds, epoch_num
         )
 
         if mode == "train":
