@@ -4,6 +4,7 @@ import pandas as pd
 import sacred
 from datetime import datetime
 import h5py
+import pyBigWig
 import feature.util as util
 
 dataset_ex = sacred.Experiment("dataset")
@@ -36,6 +37,9 @@ def config():
 
     # Sample X negatives randomly from the genome for every positive example
     negative_ratio = 1
+
+    # Whether or not to also produce a motif prediction track as values
+    yield_motif_preds = True
 
     # Use this stride when tiling coordinates across a peak
     peak_tiling_stride = 25
@@ -125,14 +129,36 @@ class CoordsToVals:
             separate dataset for each chromosome, and it is expected to return
             profiles of shape L x S x 2, where L is the coordinate dimension,
             S is the number of profile tracks, and 2 is for each strand
-        `center_size_to_use`: for each genomic coordinate, center it and pad it
-            on both sides to this length to get the final profile; if this is
+        `profile_size`: for each genomic coordinate, center it and pad it on
+            both sides to this length to get the final profile; if this is
             smaller than the coordinate interval given, then the interval will
             be cut to this size by centering
+        `motif_pred_bigwig_path`: path to BigWig containing motif predictions
+        `motif_pred_size`: for each genomic coordinate, center it and pad it on
+            both sides to this length to get the motif prediction track; if this
+            is smaller than the coordinate interval given, then the interval
+            will be cut to this size by centering; only needed if
+            `motif_pred_bigwig_path` is given
     """
-    def __init__(self, hdf5_path, center_size_to_use):
+    def __init__(
+        self, hdf5_path, profile_size, motif_pred_bigwig_path=None,
+        motif_pred_size=None
+    ):
         self.hdf5_path = hdf5_path
-        self.center_size_to_use = center_size_to_use
+        self.profile_size = profile_size
+        self.motif_pred_bigwig_path = motif_pred_bigwig_path
+        self.motif_pred_size = motif_pred_size
+
+    def _resize_interval(start, end, size):
+        """
+        Resizes the interval by centering and trimming/padding to the given
+        size.
+        """
+        center = int(0.5 * (start + end))
+        half_size = int(0.5 * size)
+        left = center - half_size
+        right = left + size
+        return left, right
 
     def _get_profile(self, chrom, start, end, hdf5_reader):
         """
@@ -140,26 +166,47 @@ class CoordsToVals:
         HDF5 reader. Returns the profile as a NumPy array of numbers. This may
         pad or cut from the center to a specified length.
         """
-        if self.center_size_to_use:
-            center = int(0.5 * (start + end))
-            half_size = int(0.5 * self.center_size_to_use)
-            left = center - half_size
-            right = center + self.center_size_to_use - half_size
-            return hdf5_reader[chrom][left:right]
-        else:
-            return hdf5_reader[chrom][start:end]
+        if self.profile_size:
+            start, end = CoordsToVals._resize_interval(
+                start, end, self.profile_size
+            )
+        return hdf5_reader[chrom][start:end]
+
+    def _get_motif_preds(self, chrom, start, end, bigwig_reader):
+        """
+        Fetches the motif predictions for the given coordinates, with an
+        instantiated BigWig reader. Returns the profile as a NumPy array of
+        numbers. This may pad or cut from the center to a specified length.
+        """
+        if self.motif_pred_size:
+            start, end = CoordsToVals._resize_interval(
+                start, end, self.motif_pred_size
+            )
+        return np.nan_to_num(bigwig_reader.values(chrom, start, end))
         
     def _get_ndarray(self, coords):
         """
-        From an iterable of coordinates, retrieves a 2D NumPy array of
-        corresponding profile values. Note that all coordinate intervals need
-        to be of the same length. 
+        From an iterable of coordinates, retrieves a values for that coordinate.
+        This will be a 4D NumPy array of corresponding profile values. If a
+        motif prediction BigWig track was also provided at object creation, then
+        there will be a second 2D NumPy array of motif prediction values.
+        Note that all coordinate intervals need to be of the same length (after
+        padding).
         """
         with h5py.File(self.hdf5_path, "r") as reader:
-            return np.stack([
+            profiles = np.stack([
                 self._get_profile(chrom, start, end, reader) \
                 for chrom, start, end in coords
             ])
+        if self.motif_pred_bigwig_path:
+            with pyBigWig.open(self.motif_pred_bigwig_path, "r") as reader:
+                motif_preds = np.stack([
+                    self._get_motif_preds(chrom, start, end, reader) \
+                    for chrom, start, end in coords
+                ])
+            return profiles, motif_preds
+        else:
+            return profiles
 
     def __call__(self, coords):
         return self._get_ndarray(coords)
@@ -539,8 +586,11 @@ class CoordDataset(torch.utils.data.IterableDataset):
     def get_batch(self, index):
         """
         Returns a batch, which consists of an B x L x 4 NumPy array of 1-hot
-        encoded sequence, an B x S x L x 2 NumPy array of profiles, and a 1D
-        length-N NumPy array of statuses.
+        encoded sequence, the associated values, and a 1D length-N NumPy array
+        of statuses. If the CoordsToVals object returns motif predictions, the
+        values will be a pair of B x L x S x 2 array of profiles and a B x I
+        array of motif predictions; otherwise, it will just be the profiles. The
+        coordinates and peaks may also be returned.
         """
         # Get batch of coordinates for this index
         if self.return_coords:
@@ -551,9 +601,15 @@ class CoordDataset(torch.utils.data.IterableDataset):
         # Map this batch of coordinates to 1-hot encoded sequences
         seqs = self.coords_to_seq(coords, revcomp=self.revcomp)
 
-        # Map this batch of coordinates to the associated profiles
-        profiles = self.coords_to_vals(coords)
-        # These profiles are returned as B x L x S x 2, so transpose to get
+        # Map this batch of coordinates to the associated values
+        values = self.coords_to_vals(coords)
+        if type(values) is tuple:
+            # Both profiles and motif predictions returned
+            profiles, motif_preds = values
+        else:
+            profiles = values
+
+        # Profiles are returned as B x L x S x 2, so transpose to get
         # B x S x L x 2
         profiles = np.swapaxes(profiles, 1, 2)
 
@@ -566,6 +622,15 @@ class CoordDataset(torch.utils.data.IterableDataset):
                 [profiles, np.flip(profiles, axis=(2, 3))]
             )
             status = np.concatenate([status, status])
+            if type(values) is tuple:
+                motif_preds = np.concatenate(
+                    [motif_preds, np.flip(motif_preds, axis=1)]
+                )
+
+        if type(values) is tuple:
+            values = profiles, motif_preds
+        else:
+            values = profiles
 
         if self.return_coords:
             if self.revcomp:
@@ -573,9 +638,9 @@ class CoordDataset(torch.utils.data.IterableDataset):
                 peaks_ret = np.concatenate([peaks, peaks])
             else:
                 coords_ret, peaks_ret = coords, peaks
-            return seqs, profiles, status, coords_ret, peaks_ret
+            return seqs, values, status, coords_ret, peaks_ret
         else:
-            return seqs, profiles, status
+            return seqs, values, status
 
     def __iter__(self):
         """
@@ -611,9 +676,10 @@ class CoordDataset(torch.utils.data.IterableDataset):
 def create_data_loader(
     peaks_bed_paths, profile_hdf5_path, sampling_type, batch_size,
     reference_fasta, chrom_sizes_tsv, input_length, profile_length,
-    negative_ratio, peak_tiling_stride, peak_retention, num_workers, revcomp,
-    jitter_size, negative_seed, shuffle_seed, jitter_seed, chrom_set=None,
-    shuffle=True, return_coords=False
+    negative_ratio, yield_motif_preds, peak_tiling_stride, peak_retention,
+    num_workers, revcomp, jitter_size, negative_seed, shuffle_seed, jitter_seed,
+    motif_preds_bigwig_path=None, chrom_set=None, shuffle=True,
+    return_coords=False
 ):
     """
     Creates an IterableDataset object, which iterates through batches of
@@ -630,6 +696,10 @@ def create_data_loader(
             corresponds to sampling positive and negative regions, taking only
             positive regions centered around summits, and taking only positive
             regions tiled across peaks
+        `motif_preds_bigwig_path`: path to BigWig containing motif predictions;
+            must be given if `yield_motif_preds` is True, in which case the
+            values returned by the dataset are both profiles and motif
+            predictions
         `chrom_set`: a list of chromosomes to restrict to for the positives and
             sampled negatives; defaults to all coordinates in the given BEDs and
             sampling over the entire genome
@@ -642,8 +712,15 @@ def create_data_loader(
             "PeakTilingCoordsBatcher"
     )
 
-    # Maps set of coordinates to profiles
-    coords_to_vals = CoordsToVals(profile_hdf5_path, profile_length)
+    # Maps set of coordinates to profiles (and perhaps motif predictions)
+    if yield_motif_preds:
+        assert motif_preds_bigwig_path
+        coords_to_vals = CoordsToVals(
+            profile_hdf5_path, profile_length, motif_preds_bigwig_path,
+            input_length
+        )
+    else:
+        coords_to_vals = CoordsToVals(profile_hdf5_path, profile_length)
 
     if sampling_type == "SamplingCoordsBatcher":
         # Randomly samples from genome
@@ -709,6 +786,7 @@ def main():
         paths_json = json.load(f)
     peak_beds = paths_json["peak_beds"]
     profile_hdf5 = paths_json["profile_hdf5"]
+    motif_preds_bigwig = paths_json["motif_preds_bigwig"]
 
     splits_json_path = "/users/amtseng/att_priors/data/processed/chrom_splits.json"
     with open(splits_json_path, "r") as f:
@@ -721,7 +799,8 @@ def main():
         peak_beds, profile_hdf5, "SamplingCoordsBatcher",
         return_coords=True, chrom_set=val_chroms,
         jitter_size=128, jitter_seed=123, peak_retention=0.1,
-        shuffle_seed=123, negative_seed=123
+        shuffle_seed=123, negative_seed=123,
+        motif_preds_bigwig_path=motif_preds_bigwig
     )
     loader.dataset.on_epoch_start()
 
@@ -734,10 +813,11 @@ def main():
     k = 2
     rc_k = int(len(data[0]) / 2) + k
 
-    seqs, profiles, statuses, coords, peaks = data
+    seqs, (profiles, motifs), statuses, coords, peaks = data
     
-    seq, prof, status = seqs[k], profiles[k], statuses[k]
-    rc_seq, rc_prof, rc_status = seqs[rc_k], profiles[rc_k], statuses[rc_k]
+    seq, prof, motif, status = seqs[k], profiles[k], motifs[k], statuses[k]
+    rc_seq, rc_prof, rc_motif, rc_status = \
+        seqs[rc_k], profiles[rc_k], motifs[rc_k], statuses[rc_k]
 
     coord, peak = coords[k], peaks[k]
     rc_coord, rc_peak = coords[rc_k], peaks[rc_k]
@@ -748,6 +828,8 @@ def main():
    
     print_one_hot_seq(seq)
     print_one_hot_seq(rc_seq)
+
+    print(np.sum(motif), np.sum(rc_motif))
 
     print(status, rc_status)
 

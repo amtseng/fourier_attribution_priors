@@ -55,23 +55,35 @@ def config(dataset):
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
     att_prior_loss_weight = 50
 
-    # Annealing factor for attribution prior loss weight: 2/(1 + e^(-c*x)) - 1
-    # Set to None for no annealing
-    att_prior_loss_weight_anneal = 1
+    # Type of annealing; can be None (constant/no annealing), "inflate" (follows
+    # `2/(1 + e^(-c*x)) - 1`), or "deflate" (follows `e^(-c * x)`)
+    att_prior_loss_weight_anneal_type = "inflate"
+
+    # Annealing factor for attribution prior loss weight, c
+    if att_prior_loss_weight_anneal_type == "inflate":
+        att_prior_loss_weight_anneal_speed = 1
+    elif att_prior_loss_weight_anneal_type == "deflate":
+        att_prior_loss_weight_anneal_speed = 0.3
 
     # Smoothing amount for gradients before computing attribution prior loss;
     # Smoothing window size is 1 + (2 * sigma); set to 0 for no smoothing
     att_prior_grad_smooth_sigma = 3
 
-    # Maximum frequency integer to consider for a positive attribution prior
-    att_prior_pos_limit = 160
+    # Form of the attribution prior; either "fourier" or "motif_scan"; if the
+    # latter, make sure that the dataset is yielding the motif predictions,
+    # and vice versa
+    att_prior_form = "motif_scan"
+    if att_prior_form == "motif_scan":
+        assert dataset["yield_motif_preds"]
+    else:
+        assert not dataset["yield_motif_preds"]
 
-    # Amount to soften the attribution prior loss limit for positives; set to
-    # None to not soften; softness decays like 1 / (1 + x^c) after the limit
-    att_prior_pos_limit_softness = None
+    # Maximum frequency integer to consider for a Fourier attribution prior
+    fourier_att_prior_freq_limit = 160
 
-    # Weight for negatives within the attribution prior loss
-    att_prior_neg_weight = 0
+    # Amount to soften the Fourier attribution prior loss limit; set to None
+    # to not soften; softness decays like 1 / (1 + x^c) after the limit
+    fourier_att_prior_freq_limit_softness = None
 
     # Number of training epochs
     num_epochs = 10
@@ -141,11 +153,12 @@ def create_model(
 
 @train_ex.capture
 def model_loss(
-    model, true_profs, log_pred_profs, log_pred_counts, status, input_grads,
-    epoch_num, counts_loss_weight, att_prior_loss_weight,
-    att_prior_loss_weight_anneal, att_prior_pos_limit,
-    att_prior_pos_limit_softness, att_prior_neg_weight,
-    att_prior_grad_smooth_sigma, att_prior_loss_only
+    model, true_profs, log_pred_profs, log_pred_counts, epoch_num,
+    counts_loss_weight, att_prior_loss_weight,
+    att_prior_loss_weight_anneal_type, att_prior_loss_weight_anneal_speed,
+    att_prior_grad_smooth_sigma, att_prior_form, fourier_att_prior_freq_limit,
+    fourier_att_prior_freq_limit_softness, att_prior_loss_only,
+    input_grads=None, status=None, motif_preds=None
 ):
     """
     Computes the loss for the model.
@@ -158,17 +171,23 @@ def model_loss(
             profile predictions as logits
         `log_pred_counts`: a B x T x 2 tensor consisting of the log counts
             predictions
-        `status`: a B-tensor, where B is the batch size; each entry is 1 if that
-            that example is to be treated as a positive example, and 0 otherwise
+        `epoch_num`: a 0-indexed integer representing the current epoch
         `input_grads`: a B x I x D tensor, where I is the input length and D is
             the input depth; this is the gradient of the output with respect to
-            the input, times the input itself
-        `epoch_num`: a 0-indexed integer representing the current epoch
+            the input, times the input itself; only needed when attribution
+            prior loss weight is positive
+        `status`: a B-tensor, where B is the batch size; each entry is 1 if that
+            that example is to be treated as a positive example, and 0
+            otherwise; only needed when attribution prior loss weight is
+            positive and the prior type is "fourier"
+        `motif_preds`: a B x I tensor containing whether or not each location in
+            the input is predicted to be part of a motif; only needed when
+            attribution prior loss weight is positive and the prior type is
+            "motif_scan"
     Returns a scalar Tensor containing the loss for the given batch, a pair
-    consisting of the correctness loss and the attribution prior loss, a pair
-    for the profile loss and the counts loss, and a pair for the positive
-    attribution prior loss and negative attribution prior loss.
-    If the attribution prior loss is not computed at all, then 0s will be in its
+    consisting of the correctness loss and the attribution prior loss, and a
+    pair for the profile loss and the counts loss.
+    If the attribution prior loss is not computed at all, then 0 will be in its
     place, instead.
     """
     corr_loss, prof_loss, count_loss = model.correctness_loss(
@@ -178,31 +197,40 @@ def model_loss(
     
     if not att_prior_loss_weight:
         return corr_loss, (corr_loss, torch.zeros(1)), \
-            (prof_loss, count_loss), (torch.zeros(1), torch.zeros(1))
+            (prof_loss, count_loss)
+   
+    if att_prior_form == "fourier": 
+        att_prior_loss = model.fourier_att_prior_loss(
+            status, input_grads, fourier_att_prior_freq_limit,
+            fourier_att_prior_freq_limit_softness, att_prior_grad_smooth_sigma
+        )
+    elif att_prior_form == "motif_scan":
+        att_prior_loss = model.motif_scan_att_prior_loss(
+            input_grads, motif_preds, att_prior_grad_smooth_sigma
+        )
     
-    att_prior_loss, pos_loss, neg_loss = model.att_prior_loss(
-        status, input_grads, att_prior_pos_limit,
-        att_prior_pos_limit_softness, att_prior_neg_weight,
-        att_prior_grad_smooth_sigma, return_separate_losses=True
-    )
-
-    if att_prior_loss_weight_anneal is None:
+    if att_prior_loss_weight_anneal_type is None:
         weight = att_prior_loss_weight
-    else:
-        weight = att_prior_loss_weight * \
-            ((2 / (1 + np.exp(-att_prior_loss_weight_anneal * epoch_num))) - 1)
+    elif att_prior_loss_weight_anneal_type == "inflate":
+        exp = np.exp(-att_prior_loss_weight_anneal_speed * epoch_num)
+        weight = att_prior_loss_weight * ((2 / (1 + exp)) - 1)
+    elif att_prior_loss_weight_anneal_type == "deflate":
+        exp = np.exp(-att_prior_loss_weight_anneal_speed * epoch_num)
+        weight = att_prior_loss_weight * exp
+
     if att_prior_loss_only:
         final_loss = att_prior_loss
     else:
         final_loss = corr_loss + (weight * att_prior_loss)
-    return final_loss, (corr_loss, att_prior_loss), (prof_loss, count_loss), \
-        (pos_loss, neg_loss)
+
+    return final_loss, (corr_loss, att_prior_loss), (prof_loss, count_loss)
 
 
 @train_ex.capture
 def run_epoch(
-    data_loader, mode, model, epoch_num, num_tasks, att_prior_loss_weight,
-    batch_size, revcomp, profile_length, optimizer=None, return_data=False
+    data_loader, mode, model, epoch_num, num_tasks, att_prior_form,
+    att_prior_loss_weight, batch_size, revcomp, profile_length, optimizer=None,
+    return_data=False
 ):
     """
     Runs the data from the data loader once through the model, to train,
@@ -223,10 +251,9 @@ def run_epoch(
             gradients (if the attribution prior loss is not used, these will all
             be garbage), and coordinates used
     Returns lists of overall losses, correctness losses, attribution prior
-    losses, profile losses, count losses, positive prior losses, and negative
-    prior losses, where each list is over all batches. If the attribution prior
-    loss is not computed, then the corresponding lists will be all 0s.
-    If `return_data` is True, then more things will be returned after these.
+    losses, profile losses, and count losses, where each list is over all
+    batches. If the attribution prior loss is not computed, then it will be all
+    0s. If `return_data` is True, then more things will be returned after these.
     """
     assert mode in ("train", "eval")
     if mode == "train":
@@ -246,7 +273,6 @@ def run_epoch(
 
     batch_losses, corr_losses, att_losses = [], [], []
     prof_losses, count_losses = [], []
-    pos_losses, neg_losses = [], []
     if return_data:
         # Allocate empty NumPy arrays to hold the results
         num_samples_exp = num_batches * batch_size
@@ -263,7 +289,15 @@ def run_epoch(
         all_coords = np.empty((num_samples_exp, 3), dtype=object)
         num_samples_seen = 0  # Real number of samples seen
 
-    for input_seqs, profiles, statuses, coords, peaks in t_iter:
+    for data_batch in t_iter:
+        if att_prior_form == "motif_scan":
+            input_seqs, (profiles, motif_preds), statuses, coords, peaks = \
+                data_batch
+            motif_preds = util.place_tensor(torch.tensor(motif_preds)).float()
+        else:
+            input_seqs, profiles, statuses, coords, peaks = data_batch
+            motif_preds = None
+
         if return_data:
             input_seqs_np = input_seqs
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
@@ -304,10 +338,9 @@ def run_epoch(
             logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
             status, input_grads = None, None
 
-        loss, (corr_loss, att_loss), (prof_loss, count_loss), \
-            (pos_loss, neg_loss) = model_loss(
-            model, tf_profs, logit_pred_profs, log_pred_counts, status,
-            input_grads, epoch_num
+        loss, (corr_loss, att_loss), (prof_loss, count_loss) = model_loss(
+            model, tf_profs, logit_pred_profs, log_pred_counts, epoch_num,
+            status=status, input_grads=input_grads, motif_preds=motif_preds
         )
 
         if mode == "train":
@@ -319,8 +352,6 @@ def run_epoch(
         att_losses.append(att_loss.item())
         prof_losses.append(prof_loss.item())
         count_losses.append(count_loss.item())
-        pos_losses.append(pos_loss.item())
-        neg_losses.append(neg_loss.item())
         t_iter.set_description(
             "\tLoss: %6.4f" % loss.item()
         )
@@ -362,12 +393,11 @@ def run_epoch(
         all_input_grads = all_input_grads[:num_samples_seen]
         all_coords = all_coords[:num_samples_seen]
         return batch_losses, corr_losses, att_losses, prof_losses, \
-            count_losses, pos_losses, neg_losses, all_log_pred_profs, \
-            all_log_pred_counts, all_true_profs, all_true_counts, \
-            all_input_seqs, all_input_grads, all_coords
+            count_losses, all_log_pred_profs, all_log_pred_counts, \
+            all_true_profs, all_true_counts, all_input_seqs, all_input_grads, \
+            all_coords
     else:
-        return batch_losses, corr_losses, att_losses, prof_losses, \
-            count_losses, pos_losses, neg_losses
+        return batch_losses, corr_losses, att_losses, prof_losses, count_losses
 
 
 @train_ex.capture
@@ -412,7 +442,7 @@ def train_model(
             torch.cuda.empty_cache()  # Clear GPU memory
 
         t_batch_losses, t_corr_losses, t_att_losses, t_prof_losses, \
-            t_count_losses, t_pos_losses, t_neg_losses = run_epoch(
+            t_count_losses = run_epoch(
                 train_loader, "train", model, epoch, optimizer=optimizer
         )
         train_epoch_loss = np.nanmean(t_batch_losses)
@@ -427,11 +457,9 @@ def train_model(
         _run.log_scalar("train_att_losses", t_att_losses)
         _run.log_scalar("train_prof_corr_losses", t_prof_losses)
         _run.log_scalar("train_count_corr_losses", t_count_losses)
-        _run.log_scalar("train_pos_att_losses", t_pos_losses)
-        _run.log_scalar("train_neg_att_losses", t_neg_losses)
 
         v_batch_losses, v_corr_losses, v_att_losses, v_prof_losses, \
-            v_count_losses, v_pos_losses, v_neg_losses = run_epoch(
+            v_count_losses = run_epoch(
                 val_loader, "eval", model, epoch
         )
         val_epoch_loss = np.nanmean(v_batch_losses)
@@ -446,8 +474,6 @@ def train_model(
         _run.log_scalar("val_att_losses", v_att_losses)
         _run.log_scalar("val_prof_corr_losses", v_prof_losses)
         _run.log_scalar("val_count_corr_losses", v_count_losses)
-        _run.log_scalar("val_pos_att_losses", v_pos_losses)
-        _run.log_scalar("val_neg_att_losses", v_neg_losses)
 
         # Save trained model for the epoch
         savepath = os.path.join(
@@ -479,9 +505,8 @@ def train_model(
     ]:
         print("Computing test metrics, %s:" % prefix)
         batch_losses, corr_losses, att_losses, prof_losses, count_losses, \
-            pos_losses, neg_losses, log_pred_profs, log_pred_counts, \
-            true_profs, true_counts, input_seqs, input_grads, \
-            coords = run_epoch(
+            log_pred_profs, log_pred_counts, true_profs, true_counts, \
+            input_seqs, input_grads, coords = run_epoch(
                 data_loader, "eval", model, 0, return_data=True
                 # Don't use attribution prior loss when computing final loss
         )
@@ -490,8 +515,6 @@ def train_model(
         _run.log_scalar("test_%s_att_losses" % prefix, att_losses)
         _run.log_scalar("test_%s_prof_corr_losses" % prefix, prof_losses)
         _run.log_scalar("test_%s_count_corr_losses" % prefix, count_losses)
-        _run.log_scalar("test_%s_pos_att_losses" % prefix, pos_losses)
-        _run.log_scalar("test_%s_neg_att_losses" % prefix, neg_losses)
 
         metrics = profile_performance.compute_performance_metrics(
             true_profs, log_pred_profs, true_counts, log_pred_counts
@@ -501,28 +524,33 @@ def train_model(
 
 @train_ex.command
 def run_training(
-    peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms
+    peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms,
+    motif_preds_bigwig=None
 ):
     train_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SamplingCoordsBatcher",
-        return_coords=True, chrom_set=train_chroms
+        return_coords=True, chrom_set=train_chroms,
+        motif_preds_bigwig_path=motif_preds_bigwig
     )
     val_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SamplingCoordsBatcher",
-        return_coords=True, chrom_set=val_chroms,
-        peak_retention=None  # Make sure we use the whole validation set
+        return_coords=True, chrom_set=val_chroms, peak_retention=None,
+        motif_preds_bigwig_path=motif_preds_bigwig
+        # Use the whole validation set
     )
     test_summit_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SummitCenteringCoordsBatcher",
-        return_coords=True, revcomp=False, chrom_set=test_chroms
+        return_coords=True, revcomp=False, chrom_set=test_chroms,
+        motif_preds_bigwig_path=motif_preds_bigwig
     )
     test_peak_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "PeakTilingCoordsBatcher",
-        return_coords=True, chrom_set=test_chroms
+        return_coords=True, chrom_set=test_chroms,
+        motif_preds_bigwig_path=motif_preds_bigwig
     )
     test_genome_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SamplingCoordsBatcher", return_coords=True,
-        chrom_set=test_chroms
+        chrom_set=test_chroms, motif_preds_bigwig_path=motif_preds_bigwig
     )
     train_model(
         train_loader, val_loader, test_summit_loader, test_peak_loader,
@@ -538,7 +566,8 @@ def main():
         paths_json = json.load(f)
     peak_beds = paths_json["peak_beds"]
     profile_hdf5 = paths_json["profile_hdf5"]
-
+    motif_preds_bigwig = paths_json["motif_preds_bigwig"]
+    
     splits_json_path = "/users/amtseng/att_priors/data/processed/chrom_splits.json"
     with open(splits_json_path, "r") as f:
         splits_json = json.load(f)
@@ -546,4 +575,7 @@ def main():
         splits_json["1"]["train"], splits_json["1"]["val"], \
         splits_json["1"]["test"]
 
-    run_training(peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms)
+    run_training(
+        peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms,
+        motif_preds_bigwig
+    )
