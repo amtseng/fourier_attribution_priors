@@ -60,7 +60,9 @@ def config(dataset):
     att_prior_loss_weight_anneal_type = "inflate"
 
     # Annealing factor for attribution prior loss weight, c
-    if att_prior_loss_weight_anneal_type == "inflate":
+    if att_prior_loss_weight_anneal_type is None:
+        att_prior_loss_weight_anneal_speed = None
+    elif att_prior_loss_weight_anneal_type == "inflate":
         att_prior_loss_weight_anneal_speed = 1
     elif att_prior_loss_weight_anneal_type == "deflate":
         att_prior_loss_weight_anneal_speed = 0.3
