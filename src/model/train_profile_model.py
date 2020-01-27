@@ -49,6 +49,9 @@ def config(dataset):
     # Number of prediction tasks (2 outputs for each task: plus/minus strand)
     num_tasks = 4
 
+    # Whether or not to use control profiles in model
+    use_controls = True
+
     # Amount to weight the counts loss within the correctness loss
     counts_loss_weight = 20
 
@@ -120,14 +123,19 @@ def config(dataset):
 
 @train_ex.capture
 def create_model(
-    input_length, input_depth, profile_length, num_tasks, num_dil_conv_layers,
-    dil_conv_filter_sizes, dil_conv_stride, dil_conv_dilations, dil_conv_depths,
-    prof_conv_kernel_size, prof_conv_stride
+    use_controls, input_length, input_depth, profile_length, num_tasks,
+    num_dil_conv_layers, dil_conv_filter_sizes, dil_conv_stride,
+    dil_conv_dilations, dil_conv_depths, prof_conv_kernel_size, prof_conv_stride
 ):
     """
     Creates a profile model using the configuration above.
     """
-    prof_model = profile_models.ProfileTFBindingPredictor(
+    if use_controls:
+        predictor_class = profile_models.ProfilePredictorWithControls
+    else:
+        predictor_class = profile_models.ProfilePredictorWithoutControls
+
+    prof_model = predictor_class(
         input_length=input_length,
         input_depth=input_depth,
         profile_length=profile_length,
@@ -212,8 +220,9 @@ def model_loss(
 
 @train_ex.capture
 def run_epoch(
-    data_loader, mode, model, epoch_num, num_tasks, att_prior_loss_weight,
-    batch_size, revcomp, profile_length, optimizer=None, return_data=False
+    data_loader, mode, model, epoch_num, num_tasks, use_controls,
+    att_prior_loss_weight, batch_size, revcomp, profile_length, optimizer=None,
+    return_data=False
 ):
     """
     Runs the data from the data loader once through the model, to train,
@@ -221,8 +230,9 @@ def run_epoch(
     Arguments:
         `data_loader`: an instantiated `DataLoader` instance that gives batches
             of data; each batch must yield the input sequences, profiles, and
-            statuses; profiles must be such that the first half are prediction
-            (target) profiles, and the second half are control profiles
+            statuses; if `use_controls` is True, profiles must be such that the
+            first half are prediction (target) profiles, and the second half are
+            control profiles; otherwise, all tasks are prediction profiles
         `mode`: one of "train", "eval"; if "train", run the epoch and perform
             backpropagation; if "eval", only do evaluation
         `model`: the current PyTorch model being trained/evaluated
@@ -278,8 +288,11 @@ def run_epoch(
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
         profiles = util.place_tensor(torch.tensor(profiles)).float()
 
-        tf_profs = profiles[:, :num_tasks, :, :]
-        cont_profs = profiles[:, num_tasks:, :, :]
+        if use_controls:
+            tf_profs = profiles[:, :num_tasks, :, :]
+            cont_profs = profiles[:, num_tasks:, :, :]
+        else:
+            tf_profs, cont_profs = profiles, None
 
         # Clear gradients from last batch if training
         if mode == "train":
