@@ -71,15 +71,6 @@ def config(dataset):
     # Smoothing window size is 1 + (2 * sigma); set to 0 for no smoothing
     att_prior_grad_smooth_sigma = 3
 
-    # Form of the attribution prior; either "fourier" or "motif_scan"; if the
-    # latter, make sure that the dataset is yielding the motif predictions,
-    # and vice versa
-    att_prior_form = "motif_scan"
-    if att_prior_form == "motif_scan":
-        assert dataset["yield_motif_preds"]
-    else:
-        assert not dataset["yield_motif_preds"]
-
     # Maximum frequency integer to consider for a Fourier attribution prior
     fourier_att_prior_freq_limit = 160
 
@@ -158,9 +149,9 @@ def model_loss(
     model, true_profs, log_pred_profs, log_pred_counts, epoch_num,
     counts_loss_weight, att_prior_loss_weight,
     att_prior_loss_weight_anneal_type, att_prior_loss_weight_anneal_speed,
-    att_prior_grad_smooth_sigma, att_prior_form, fourier_att_prior_freq_limit,
+    att_prior_grad_smooth_sigma, fourier_att_prior_freq_limit,
     fourier_att_prior_freq_limit_softness, att_prior_loss_only,
-    input_grads=None, status=None, motif_preds=None
+    input_grads=None, status=None
 ):
     """
     Computes the loss for the model.
@@ -181,11 +172,7 @@ def model_loss(
         `status`: a B-tensor, where B is the batch size; each entry is 1 if that
             that example is to be treated as a positive example, and 0
             otherwise; only needed when attribution prior loss weight is
-            positive and the prior type is "fourier"
-        `motif_preds`: a B x I tensor containing whether or not each location in
-            the input is predicted to be part of a motif; only needed when
-            attribution prior loss weight is positive and the prior type is
-            "motif_scan"
+            positive
     Returns a scalar Tensor containing the loss for the given batch, a pair
     consisting of the correctness loss and the attribution prior loss, and a
     pair for the profile loss and the counts loss.
@@ -201,15 +188,10 @@ def model_loss(
         return corr_loss, (corr_loss, torch.zeros(1)), \
             (prof_loss, count_loss)
    
-    if att_prior_form == "fourier": 
-        att_prior_loss = model.fourier_att_prior_loss(
-            status, input_grads, fourier_att_prior_freq_limit,
-            fourier_att_prior_freq_limit_softness, att_prior_grad_smooth_sigma
-        )
-    elif att_prior_form == "motif_scan":
-        att_prior_loss = model.motif_scan_att_prior_loss(
-            input_grads, motif_preds, att_prior_grad_smooth_sigma
-        )
+    att_prior_loss = model.fourier_att_prior_loss(
+        status, input_grads, fourier_att_prior_freq_limit,
+        fourier_att_prior_freq_limit_softness, att_prior_grad_smooth_sigma
+    )
     
     if att_prior_loss_weight_anneal_type is None:
         weight = att_prior_loss_weight
@@ -230,9 +212,8 @@ def model_loss(
 
 @train_ex.capture
 def run_epoch(
-    data_loader, mode, model, epoch_num, num_tasks, att_prior_form,
-    att_prior_loss_weight, batch_size, revcomp, profile_length, optimizer=None,
-    return_data=False
+    data_loader, mode, model, epoch_num, num_tasks, att_prior_loss_weight,
+    batch_size, revcomp, profile_length, optimizer=None, return_data=False
 ):
     """
     Runs the data from the data loader once through the model, to train,
@@ -291,15 +272,7 @@ def run_epoch(
         all_coords = np.empty((num_samples_exp, 3), dtype=object)
         num_samples_seen = 0  # Real number of samples seen
 
-    for data_batch in t_iter:
-        if att_prior_form == "motif_scan":
-            input_seqs, (profiles, motif_preds), statuses, coords, peaks = \
-                data_batch
-            motif_preds = util.place_tensor(torch.tensor(motif_preds)).float()
-        else:
-            input_seqs, profiles, statuses, coords, peaks = data_batch
-            motif_preds = None
-
+    for input_seqs, profiles, statuses, coords, peaks in t_iter:
         if return_data:
             input_seqs_np = input_seqs
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
@@ -342,7 +315,7 @@ def run_epoch(
 
         loss, (corr_loss, att_loss), (prof_loss, count_loss) = model_loss(
             model, tf_profs, logit_pred_profs, log_pred_counts, epoch_num,
-            status=status, input_grads=input_grads, motif_preds=motif_preds
+            status=status, input_grads=input_grads
         )
 
         if mode == "train":
@@ -526,33 +499,28 @@ def train_model(
 
 @train_ex.command
 def run_training(
-    peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms,
-    motif_preds_bigwig=None
+    peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms
 ):
     train_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SamplingCoordsBatcher",
-        return_coords=True, chrom_set=train_chroms,
-        motif_preds_bigwig_path=motif_preds_bigwig
+        return_coords=True, chrom_set=train_chroms
     )
     val_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SamplingCoordsBatcher",
-        return_coords=True, chrom_set=val_chroms, peak_retention=None,
-        motif_preds_bigwig_path=motif_preds_bigwig
+        return_coords=True, chrom_set=val_chroms, peak_retention=None
         # Use the whole validation set
     )
     test_summit_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SummitCenteringCoordsBatcher",
-        return_coords=True, revcomp=False, chrom_set=test_chroms,
-        motif_preds_bigwig_path=motif_preds_bigwig
+        return_coords=True, revcomp=False, chrom_set=test_chroms
     )
     test_peak_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "PeakTilingCoordsBatcher",
-        return_coords=True, chrom_set=test_chroms,
-        motif_preds_bigwig_path=motif_preds_bigwig
+        return_coords=True, chrom_set=test_chroms
     )
     test_genome_loader = make_profile_dataset.create_data_loader(
         peak_beds, profile_hdf5, "SamplingCoordsBatcher", return_coords=True,
-        chrom_set=test_chroms, motif_preds_bigwig_path=motif_preds_bigwig
+        chrom_set=test_chroms
     )
     train_model(
         train_loader, val_loader, test_summit_loader, test_peak_loader,
@@ -568,7 +536,6 @@ def main():
         paths_json = json.load(f)
     peak_beds = paths_json["peak_beds"]
     profile_hdf5 = paths_json["profile_hdf5"]
-    motif_preds_bigwig = paths_json["motif_preds_bigwig"]
     
     splits_json_path = "/users/amtseng/att_priors/data/processed/chrom_splits.json"
     with open(splits_json_path, "r") as f:
@@ -578,6 +545,5 @@ def main():
         splits_json["1"]["test"]
 
     run_training(
-        peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms,
-        motif_preds_bigwig
+        peak_beds, profile_hdf5, train_chroms, val_chroms, test_chroms
     )

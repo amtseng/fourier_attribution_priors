@@ -390,40 +390,6 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         else:
             return place_tensor(torch.zeros(1))
 
-    def motif_scan_att_prior_loss(
-        self, input_grads, motif_preds, att_prior_grad_smooth_sigma
-    ):
-        """
-        Computes an attribution prior loss for some given training examples,
-        using a motif scanning predictions.
-        Arguments:
-            `input_grads`: a B x L x D tensor, where B is the batch size, L is
-                the length of the input, and D is the dimensionality of each
-                input base; this needs to be the gradients of the input with
-                respect to the output (for multiple tasks, this gradient needs
-                to be aggregated); this should be *gradient times input*
-            `motif_preds`: a B x L tensor containing binary values denoting
-                whether or not a motif is present
-            `att_prior_grad_smooth_sigma`: amount to smooth the gradient before
-                computing the loss
-        Returns a single scalar Tensor consisting of the attribution loss for
-        the batch.
-        """
-        abs_grads = torch.sum(torch.abs(input_grads), dim=2)
-
-        # Smooth the gradients
-        grads_smooth = smooth_tensor_1d(
-            abs_grads, att_prior_grad_smooth_sigma
-        )
-
-        grads_sum = torch.sum(grads_smooth, dim=1, keepdim=True)
-        grads_sum[grads_sum == 0] = 1  # Keep 0s when the sum is 0
-        grads_norm = grads_smooth / grads_sum
-
-        score = torch.sum(grads_norm * motif_preds, dim=1)
-        loss = 1 - score
-        return torch.mean(loss)
-
 
 def profile_logits_to_log_probs(logit_pred_profs, axis=2):
     """
