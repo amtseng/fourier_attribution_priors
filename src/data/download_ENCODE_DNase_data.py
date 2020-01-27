@@ -1,10 +1,11 @@
 import os
 import shutil
 
-base_path = "/users/amtseng/att_priors/data/raw/ENCODE_DNase/"
-plus_bigwig_table_path = os.path.join(base_path, "count_bigwig_plus_5p")
-minus_bigwig_table_path = os.path.join(base_path, "count_bigwig_minus_5p")
-idr_peak_table_path = os.path.join(base_path, "idr.optimal.narrowPeak")
+raw_base_path = "/users/amtseng/att_priors/data/raw/ENCODE_DNase/"
+interim_base_path = "/users/amtseng/att_priors/data/interim/ENCODE_DNase/"
+plus_bigwig_table_path = os.path.join(raw_base_path, "count_bigwig_plus_5p")
+minus_bigwig_table_path = os.path.join(raw_base_path, "count_bigwig_minus_5p")
+idr_peak_table_path = os.path.join(raw_base_path, "idr.optimal.narrowPeak")
 
 def get_bigwig_paths(exp_id, strand="+"):
     """
@@ -108,7 +109,7 @@ if __name__ == "__main__":
             except ValueError as e:
                 print("\tFailure: " + str(e)) 
             
-            dir_path = os.path.join(base_path, cell_type)
+            dir_path = os.path.join(interim_base_path, cell_type)
             os.makedirs(dir_path, exist_ok=True)
 
             stem = cell_type + "_" + exp_id
