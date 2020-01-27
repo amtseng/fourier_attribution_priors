@@ -149,7 +149,7 @@ class ProfileTFBindingPredictor(torch.nn.Module):
         # counts, implemented as grouped convolution with kernel size 1
         self.count_one_conv = torch.nn.Conv1d(
             in_channels=(num_tasks * 4), out_channels=(num_tasks * 2),
-            kernel_size=1
+            kernel_size=1, groups=num_tasks
         )
 
         # MSE Loss for counts
