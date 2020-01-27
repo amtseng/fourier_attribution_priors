@@ -176,7 +176,7 @@ class ProfilePredictor(torch.nn.Module):
                 weights[:, freq_limit:] = 0
             else:
                 x = place_tensor(
-                    torch.arange(1, pos_mags.size(1) - pos_limit + 1)
+                    torch.arange(1, pos_mags.size(1) - freq_limit + 1)
                 ).float()
                 weights[:, freq_limit:] = 1 / (1 + torch.pow(x, limit_softness))
 
