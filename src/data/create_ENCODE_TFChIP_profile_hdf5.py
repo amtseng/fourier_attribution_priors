@@ -167,11 +167,11 @@ def create_hdf5(
 )
 @click.option(
     "--base-path", "-b", default=None,
-    help="Path to directory containing BigWigs; defaults to /users/amtseng/att_priors/data/interim/ENCODE/profile/{tf_name}/"
+    help="Path to directory containing BigWigs; defaults to /users/amtseng/att_priors/data/interim/ENCODE_TFChIP/profile/{tf_name}/"
 )
 @click.option(
     "--tf-cont-mapping-path", "-m", default=None,
-    help="Path to mapping between TF-ChIPseq and control ChIPseq experiment IDs; defaults to /users/amtseng/att_priors/data/raw/ENCODE/{tf_name}/tf_cont_mapping.tsv"
+    help="Path to mapping between TF-ChIPseq and control ChIPseq experiment IDs; defaults to /users/amtseng/att_priors/data/raw/ENCODE_TFChIP/{tf_name}/tf_cont_mapping.tsv"
 )
 @click.option(
     "--chrom-sizes-path", "-c",
@@ -180,7 +180,7 @@ def create_hdf5(
 )
 @click.option(
     "--out-path", "-o", default=None,
-    help="Destination for new HDF5; defaults to /users/amtseng/att_priors/data/processed/ENCODE/profile/labels/{tf_name}/{tf_name}_profiles.h5"
+    help="Destination for new HDF5; defaults to /users/amtseng/att_priors/data/processed/ENCODE_TFChIP/profile/labels/{tf_name}/{tf_name}_profiles.h5"
 )
 @click.option(
     "--chunk-size", "-s", default=1500,
@@ -199,13 +199,13 @@ def main(
     source BigWigs.
     """
     if not base_path: 
-        base_path = "/users/amtseng/att_priors/data/interim/ENCODE/profile/%s" % tf_name
+        base_path = "/users/amtseng/att_priors/data/interim/ENCODE_TFChIP/profile/%s" % tf_name
     if not tf_cont_mapping_path:
         tf_cont_mapping_path = \
-            "/users/amtseng/att_priors/data/raw/ENCODE/%s/tf_cont_mapping.tsv" % tf_name
+            "/users/amtseng/att_priors/data/raw/ENCODE_TFChIP/%s/tf_cont_mapping.tsv" % tf_name
     if not out_path:
         out_path = \
-            "/users/amtseng/att_priors/data/processed/ENCODE/profile/labels/%s/%s_profiles.h5" % (tf_name, tf_name)
+            "/users/amtseng/att_priors/data/processed/ENCODE_TFChIP/profile/labels/%s/%s_profiles.h5" % (tf_name, tf_name)
 
     bigwig_paths = fetch_bigwig_paths(base_path, tf_name, tf_cont_mapping_path)
     print("Found %d matched experiments/tasks" % (len(bigwig_paths) // 2))
