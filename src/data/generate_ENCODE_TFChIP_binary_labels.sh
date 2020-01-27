@@ -1,8 +1,8 @@
 set -beEo pipefail
 
 tfname=$1
-indir=/users/amtseng/att_priors/data/raw/ENCODE/$tfname/tf_chipseq
-outdir=/users/amtseng/att_priors/data/processed/ENCODE/binary/labels/$tfname
+indir=/users/amtseng/att_priors/data/raw/ENCODE_TFChIP/$tfname/tf_chipseq
+outdir=/users/amtseng/att_priors/data/processed/ENCODE_TFChIP/binary/labels/$tfname
 
 bglimit=150000
 

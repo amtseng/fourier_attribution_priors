@@ -781,7 +781,7 @@ def main():
     import json
     import matplotlib.pyplot as plt
 
-    paths_json_path = "/users/amtseng/att_priors/data/processed/ENCODE/profile/config/SPI1/SPI1_training_paths.json"
+    paths_json_path = "/users/amtseng/att_priors/data/processed/ENCODE_TFChIP/profile/config/SPI1/SPI1_training_paths.json"
     with open(paths_json_path, "r") as f:
         paths_json = json.load(f)
     peak_beds = paths_json["peak_beds"]

@@ -144,7 +144,7 @@ def download_tf_files(exp_file_table, cont_file_table, tf_name, save_dir):
     "--save-path", "-s", nargs=1, required=True, help="Path to save directory"
 )
 def main(tf_name, save_path):
-    base_path = "/users/amtseng/att_priors/data/raw/ENCODE/"
+    base_path = "/users/amtseng/att_priors/data/raw/ENCODE_TFChIP/"
     exp_table_path = os.path.join(base_path, "encode_tf_chip_experiments.tsv")
     cont_table_path = os.path.join(base_path, "encode_control_chip_experiments.tsv")
     file_table_path = os.path.join(base_path, "encode_tf_chip_files.tsv")

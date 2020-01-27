@@ -1,8 +1,8 @@
 set -beEo pipefail
 
 tfname=$1
-tfindir=/users/amtseng/att_priors/data/raw/ENCODE/$tfname/tf_chipseq
-contindir=/users/amtseng/att_priors/data/raw/ENCODE/$tfname/control_chipseq
+tfindir=/users/amtseng/att_priors/data/raw/ENCODE_TFChIP/$tfname/tf_chipseq
+contindir=/users/amtseng/att_priors/data/raw/ENCODE_TFChIP/$tfname/control_chipseq
 outdir=/users/amtseng/att_priors/data/interim/ENCODE/profile/labels/$tfname
 
 chromsizes=/users/amtseng/genomes/hg38.with_ebv.chrom.sizes
