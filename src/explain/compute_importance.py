@@ -5,8 +5,8 @@ import torch
 import numpy as np
 
 def create_background(
-    model_inputs, input_length, profile_length, num_tasks, bg_size=10,
-    seed=20191206
+    model_inputs, input_length, profile_length, num_tasks, use_controls=True,
+    bg_size=10, seed=20191206
 ):
     """
     From a pair of single inputs to the model, generates the set of background
@@ -18,40 +18,57 @@ def create_background(
         `input_length`: length of input, I
         `profile_length`: length of profiles, O
         `num_tasks`: number of tasks, T
+        `use_controls`: if False, does not expect or return controls (the inputs
+            and outputs will be singleton lists)
         `bg_size`: the number of background examples to generate.
     Returns a pair of tensors as a list, where the first tensor is G x I x 4,
     and the second tensor is G x T x O x 2; these are the background inputs. The
     background for the input sequences is randomly dinuceotide-shuffles of the
-    original sequence. The background for the control profiles is the same as the
-    originals.
+    original sequence. The background for the control profiles is the same as
+    the originals. If the control profiles are empty (i.e. because the model
+    does not take in control profiles), then empty profiles are also returned.
     """
     input_seq_bg_shape = (bg_size, input_length, 4)
     cont_prof_bg_shape = (bg_size, num_tasks, profile_length, 2)
     if model_inputs is None:
         # For DeepSHAP PyTorch, the model inputs could be None, but something
-        # of the right shape still needs to be returned
-        return [
-            place_tensor(torch.zeros(input_seq_bg_shape)).float(),
-            place_tensor(torch.zeros(cont_prof_bg_shape)).float()
-        ]
+        # of the right shapes need to be returned
+        if use_controls:
+            return [
+                place_tensor(torch.zeros(input_seq_bg_shape)).float(),
+                place_tensor(torch.zeros(cont_prof_bg_shape)).float()
+            ]
+        else:
+            return [
+                place_tensor(torch.zeros(input_seq_bg_shape)).float()
+            ]
     else:
-        input_seq, cont_profs = model_inputs
+        if use_controls:
+            input_seq, cont_profs = model_inputs
+            cont_profs_np = cont_profs.cpu().numpy()
+            cont_prof_bg = np.empty(cont_prof_bg_shape)
+        else:
+            input_seq = model_inputs[0]
         input_seq_np = input_seq.cpu().numpy()
-        cont_profs_np = cont_profs.cpu().numpy()
         input_seq_bg = np.empty(input_seq_bg_shape)
-        cont_prof_bg = np.empty(cont_prof_bg_shape)
         rng = np.random.RandomState(seed)
         for i in range(bg_size):
             input_seq_shuf = dinuc_shuffle(input_seq_np, rng=rng)
             input_seq_bg[i] = input_seq_shuf
-            cont_prof_bg[i] = cont_profs_np
-        return [
-            place_tensor(torch.tensor(input_seq_bg)).float(),
-            place_tensor(torch.tensor(cont_prof_bg)).float()
-        ]
+            if use_controls:
+                cont_prof_bg[i] = cont_profs_np
+        if use_controls:
+            return [
+                place_tensor(torch.tensor(input_seq_bg)).float(),
+                place_tensor(torch.tensor(cont_prof_bg)).float()
+            ]
+        else:
+            return [
+                place_tensor(torch.tensor(input_seq_bg)).float()
+            ]
 
 
-def combine_mult_and_diffref(mult, orig_inp, bg_data):
+def combine_mult_and_diffref(mult, orig_inp, bg_data, use_controls=True):
     """
     Computes the hypothetical contribution of any base in the input to the
     output, given the multipliers for the background data. This will simulate
@@ -66,6 +83,8 @@ def combine_mult_and_diffref(mult, orig_inp, bg_data):
             I x 4 array and a T x O x 2 array
         `bg_data`: the background data; a pair of a G x I x 4 array and a
             G x T x O x 2 array
+        `use_controls`: if False, expects singleton lists for the input and
+            returns a singleton list
     Returns a pair of importance scores as a list: an I x 4 array and a
     T x O x 2 zero-array.
     Note that this rule is necessary because by default, the multipliers are
@@ -78,11 +97,16 @@ def combine_mult_and_diffref(mult, orig_inp, bg_data):
     To back-out the actual scores for the original target input, simply extract
     the entries for the bases in the real input.
     """
-    input_mult, cont_profs_mult = mult
-    input_seq, cont_profs = orig_inp
-    input_seq_bg, cont_profs_bg = bg_data
+    if use_controls:
+        input_mult, cont_profs_mult = mult
+        input_seq, cont_profs = orig_inp
+        input_seq_bg, cont_profs_bg = bg_data
+        cont_profs_hyp_scores = np.zeros_like(cont_profs)
+    else:
+        input_mult = mult[0]
+        input_seq = orig_inp[0]
+        input_seq_bg = bg_data[0]
 
-    cont_profs_hyp_scores = np.zeros_like(cont_profs)
     # Allocate array to store hypothetical scores, one set for each background
     # reference
     input_seq_hyp_scores_eachref = np.empty_like(input_seq_bg)
@@ -107,7 +131,10 @@ def combine_mult_and_diffref(mult, orig_inp, bg_data):
     # Average hypothetical scores across background references
     input_seq_hyp_scores = np.mean(input_seq_hyp_scores_eachref, axis=0)
 
-    return [input_seq_hyp_scores, cont_profs_hyp_scores]
+    if use_controls:
+        return [input_seq_hyp_scores, cont_profs_hyp_scores]
+    else:
+        return [input_seq_hyp_scores]
 
 
 class WrapperModel(torch.nn.Module):
@@ -135,7 +162,7 @@ class WrapperModel(torch.nn.Module):
         self.output_type = output_type
         self.task_index = task_index
         
-    def forward(self, input_seqs, cont_profs):
+    def forward(self, input_seqs, cont_profs=None):
         prof_output, count_output = self.inner_model(input_seqs, cont_profs)
         
         if self.output_type == "profile":
@@ -173,7 +200,7 @@ class WrapperModel(torch.nn.Module):
 
 def create_explainer(
     model, input_length, profile_length, num_tasks, bg_size=10, task_index=None,
-    output_type="profile"
+    output_type="profile", use_controls=True
 ):
     """
     Given a trained Keras model, creates a Shap DeepExplainer that returns
@@ -197,18 +224,20 @@ def create_explainer(
     wrapper_model = WrapperModel(model, task_index, output_type)
 
     bg_func = lambda model_inputs: create_background(
-        model_inputs,
-        input_length, profile_length, num_tasks, bg_size=bg_size,
-        seed=None
+        model_inputs, input_length, profile_length, num_tasks,
+        use_controls=use_controls, bg_size=bg_size, seed=None
+    )
+    combine_func = lambda mult, orig_inp, bg_data: combine_mult_and_diffref(
+        mult, orig_inp, bg_data, use_controls=use_controls
     )
 
     explainer = shap.DeepExplainer(
         model=wrapper_model,
         data=bg_func,
-        combine_mult_and_diffref=combine_mult_and_diffref
+        combine_mult_and_diffref=combine_func
     )
 
-    def explain_fn(input_seqs, cont_profs):
+    def explain_fn(input_seqs, cont_profs=None):
         """
         Given input sequences and control profiles, returns hypothetical scores
         for the input sequences.
@@ -220,11 +249,13 @@ def create_explainer(
         """
         # Convert to tensors
         input_seqs_t = place_tensor(torch.tensor(input_seqs)).float()
-        cont_profs_t = place_tensor(torch.tensor(cont_profs)).float()
 
-        return explainer.shap_values(
-            [input_seqs_t, cont_profs_t], progress_message=None
-        )[0]
+        if use_controls:
+            cont_profs_t = place_tensor(torch.tensor(cont_profs)).float()
+            inputs = [input_seqs_t, cont_profs_t]
+        else:
+            inputs = [input_seqs_t]
+        return explainer.shap_values(inputs, progress_message=None)[0]
 
     return explain_fn
 
@@ -280,10 +311,12 @@ if __name__ == "__main__":
 
     # Make explainers
     prof_explainer = create_explainer(
-        model, input_length, profile_length, num_tasks, output_type="profile"
+        model, input_length, profile_length, num_tasks, output_type="profile",
+        use_controls=True
     )
     count_explainer = create_explainer(
-        model, input_length, profile_length, num_tasks, output_type="count"
+        model, input_length, profile_length, num_tasks, output_type="count",
+        use_controls=True
     )
 
     # Compute importance scores
