@@ -60,7 +60,7 @@ def config(dataset):
 
     # Type of annealing; can be None (constant/no annealing), "inflate" (follows
     # `2/(1 + e^(-c*x)) - 1`), or "deflate" (follows `e^(-c * x)`)
-    att_prior_loss_weight_anneal_type = "inflate"
+    att_prior_loss_weight_anneal_type = None
 
     # Annealing factor for attribution prior loss weight, c
     if att_prior_loss_weight_anneal_type is None:
@@ -75,11 +75,11 @@ def config(dataset):
     att_prior_grad_smooth_sigma = 3
 
     # Maximum frequency integer to consider for a Fourier attribution prior
-    fourier_att_prior_freq_limit = 160
+    fourier_att_prior_freq_limit = 200
 
     # Amount to soften the Fourier attribution prior loss limit; set to None
     # to not soften; softness decays like 1 / (1 + x^c) after the limit
-    fourier_att_prior_freq_limit_softness = None
+    fourier_att_prior_freq_limit_softness = 0.2
 
     # Number of training epochs
     num_epochs = 10
