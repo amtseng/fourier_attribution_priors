@@ -3,7 +3,9 @@ import numpy as np
 import pandas as pd
 import sacred
 from datetime import datetime
+import h5py
 import feature.util as util
+import tqdm
 
 dataset_ex = sacred.Experiment("dataset")
 
@@ -11,6 +13,9 @@ dataset_ex = sacred.Experiment("dataset")
 def config():
     # Path to reference genome FASTA
     reference_fasta = "/users/amtseng/genomes/hg38.fasta"
+
+    # Path to chromosome sizes
+    chrom_sizes_tsv = "/users/amtseng/genomes/hg38.canon.chrom.sizes"
 
     # For each input sequence in the raw data, center it and pad to this length 
     input_length = 1000
@@ -24,232 +29,201 @@ def config():
     # Batch size; will be multiplied by two if reverse complementation is done
     batch_size = 128
 
-    # Sample every X positives
-    positive_stride = 1
-
-    # Sample every X negatives
-    negative_stride = 13
-
-    # Probability of noising/varying a positive example
-    noise_prob = 0.3
+    # Sample X negatives randomly for every positive example
+    negative_ratio = 1
 
     # Number of workers for the data loader
     num_workers = 10
 
-    # Dataset seed (for shuffling)
-    dataset_seed = None
+    # Shuffle seed (for shuffling data points)
+    shuffle_seed = None
 
 
-class CoordsToVals():
+class BinsToVals():
     """
-    From a single gzipped BED file containing genomic coordinates and more
-    columns of values for each coordinate, this creates an object that maps a
-    list of coordinates (tuples) to a NumPy array of values at those coordinates.
+    From an HDF5 file that maps genomic coordinates to profiles, this creates an
+    object that maps a list of bind indices to a NumPy array of coordinates and
+    output values.
     Arguments:
-        `gzipped_bed_file`: path to gzipped BED file containing a set of
-            coordinates, with the extra columns being output values; coordinates
-            are assumed to be on the positive strand
-        `hastitle`: whether or not the BED file has a header
-        `noise_prob`: probability of corruption for a positive example; a
-            roughly equal number of negatives are also corrupted
+        `label_hdf5`: path to HDF5 containing labels; this HDF5 must be a single
+            dataset created by `generate_ENCODE_TFChIP_binary_labels.sh`; each
+            row must be: (index, values, end, start, chrom), where the values is
+            a T-array of values, for each task T, containing 0, 1, or nan
     """
-    def __init__(self, gzipped_bed_file, hastitle=False, noise_prob=0):
-        self.gzipped_bed_file = gzipped_bed_file
+    def __init__(self, label_hdf5):
+        self.label_hdf5 = label_hdf5
 
-        header = 0 if hastitle else None
-        print("\tReading in BED file...", end=" ", flush=True)
-        start = datetime.now()
-        coord_val_table = pd.read_csv(
-            gzipped_bed_file, sep="\t", header=header, compression="gzip"
-        )
-        print(str((datetime.now() - start).seconds) + "s")
-
-        # Set MultiIndex of chromosome, start, and end
-        print("\tSetting index...", end=" ", flush=True)
-        start = datetime.now()
-        coord_val_table.set_index(
-            list(coord_val_table.columns[:3]), inplace=True
-        )
-        print(str((datetime.now() - start).seconds) + "s")
-
-        self.coord_val_table = coord_val_table
-
-        if noise_prob:
-            self._noise_labels(noise_prob)
-
-    def _noise_labels(self, noise_prob):
+    def _get_ndarray(self, bin_inds):
         """
-        Randomly selects a proportion `noise_prob` of positives in
-        `self.coord_val_table` to set to negative. Randomly selects an equal
-        number of negatives in the table to set to positive. This process is
-        uniformly agnostic to the tasks (i.e. each task is equally likely to be
-        noised).
+        From a list of bin indices, returns a B x 3 array of coordinates and a
+        B x T array of corresponding values.
         """
-        print(
-            "\tRandomly adding noise (p = %3.3f)..." % noise_prob, end=" ",
-            flush=True
-        )
-        start = datetime.now()
-        values = self.coord_val_table.values
-        pos_mask, neg_mask = values == 1, values == 0
-        pos_rand_mask = np.random.choice(
-            [True, False], size=values.shape, p=[noise_prob, 1 - noise_prob]
-        )
-        neg_prob = np.sum(pos_mask & pos_rand_mask) / np.sum(neg_mask)
-        neg_rand_mask = np.random.choice(
-            [True, False], size=values.shape, p=[neg_prob, 1 - neg_prob]
-        )
-        values[pos_mask & pos_rand_mask] = 0
-        values[neg_mask & neg_rand_mask] = 1
-        self.coord_val_table[list(self.coord_val_table)] = values 
-        print(str((datetime.now() - start).seconds) + "s")
+        with h5py.File(self.label_hdf5, "r") as f:
+            batch = f["data"]["table"][np.sort(bin_inds)]
+            coords = np.array(
+                [[row[4], row[3], row[2]] for row in batch], dtype=object
+            )
+            coords[:, 0] = coords[:, 0].astype(str)  # Convert chrom to string
+            vals = np.nan_to_num(
+                np.array([row[1] for row in batch]), nan=-1
+            )
+        return coords, vals.astype(int)
 
-    def _get_ndarray(self, coords):
-        """
-        From a partial Pandas MultiIndex or list of coordinates (tuples),
-        retrieves a 2D NumPy array of corresponding values.
-        """
-        return self.coord_val_table.loc[coords].values
-
-    def __call__(self, coords):
-        return self._get_ndarray(coords)
+    def __call__(self, bin_inds):
+        return self._get_ndarray(bin_inds)
 
 
-class CoordsDownsampler(torch.utils.data.sampler.Sampler):
+class SamplingBinsBatcher(torch.utils.data.sampler.Sampler):
     """
-    Creates a batch producer that evenly samples negatives and/or positives.
+    Creates a batch producer that batches bin indices for positive bins and
+    negative bins. Each batch will have some positives and negatives according
+    to `neg_ratio`.
     Arguments:
-        `coords`: a Pandas MultiIndex containing coordinate tuples
-        `pos_coord_inds`: a NumPy array of which indices of `coords` are
-            positive examples
-        `neg_coord_inds`: a NumPy array of which indices of `coords` are
-            negative examples
+        `label_hdf5`: path to HDF5 containing labels; this HDF5 must be a single
+            dataset created by `generate_ENCODE_TFChIP_binary_labels.sh`; each
+            row must be: (index, values, end, start, chrom), where the values is
+            a T-array of values, for each task T, containing 0, 1, or nan
         `batch_size`: number of samples per batch
-        `revcomp`: whether or not to add revcomp of coordinates in batch
+        `neg_ratio`: number of negatives to select for each positive example
+        `chroms_keep`: if specified, only considers this set of chromosomes from
+            the coordinate BEDs
         `shuffle_before_epoch`: whether or not to shuffle all examples before
             each epoch
-        `pos_row_fn`: a function that, given a Coordinate, returns whether or
-            not it's a positive example
-        `neg_stride`: sample every `neg_stride` negatives before each epoch
-        `pos_stride`: sample every `pos_stride` positives before each epoch
+        `shuffle_seed`: seed for shuffling
     """
     def __init__(
-        self, coords, pos_coord_inds, neg_coord_inds, batch_size,
-        shuffle_before_epoch=False, neg_stride=1, pos_stride=1, seed=None
+        self, label_hdf5, batch_size, neg_ratio, chroms_keep=None,
+        shuffle_before_epoch=False, shuffle_seed=None
     ):
-        self.pos_coord_inds = pos_coord_inds
-        self.neg_coord_inds = neg_coord_inds
         self.batch_size = batch_size
         self.shuffle_before_epoch = shuffle_before_epoch
-        self.neg_stride = neg_stride
-        self.pos_stride = pos_stride
-        self.neg_offset = 0  # Offset for striding
-        self.pos_offset = 0  # Offset for striding
 
-        # Sort the Pandas Index of coordinates
-        print("\tSorting coordinates for downsampling...", end=" ", flush=True)
-        start = datetime.now()
-        self.coords = coords.sort_values()
-        print(str((datetime.now() - start).seconds) + "s")
+        # From the set of labels, determine indices that are to be considered
+        # positives (i.e. has a 1) or negatives (i.e. all 0)
+        # Note that this will disregard any bins that are all ambiguous or only
+        # ambiguous and negative
+        print("Gathering bin label indices:")
+        with h5py.File(label_hdf5, "r") as f:
+            data = f["data"]["table"]
+            labels = -np.ones(data.shape)
+            if chroms_keep:
+                chroms_keep = np.array(chroms_keep)
+           
+            chunk_size = 20000
+            num_chunks = int(np.ceil(data.shape[0] / chunk_size))
+            for i in tqdm.trange(num_chunks):
+                chunk_slice = slice(i * chunk_size, (i + 1) * chunk_size)
+                chunk = data[chunk_slice]
+                vals = np.array([row[1] for row in chunk])
+
+                # Mask for where a row is positive or negative
+                pos_mask = np.any(vals == 1, axis=1)
+                neg_mask = np.all(vals == 0, axis=1)
+                if chroms_keep is not None:
+                    # Only keep the places that are the right chromosome
+                    chroms = np.array([row[4] for row in chunk]).astype(str)
+                    chrom_mask = np.isin(chroms, chroms_keep)
+                    pos_mask = pos_mask & chrom_mask
+                    neg_mask = neg_mask & chrom_mask
+
+                labels[chunk_slice][pos_mask] = 1
+                labels[chunk_slice][neg_mask] = 0
+                # -1 wherever ambiguous or did not pass mask (e.g. wrong chrom)
+
+        self.pos_inds = np.where(labels == 1)[0]
+        self.neg_inds = np.where(labels == 0)[0]
+
+        self.neg_per_batch = int(batch_size * neg_ratio / (neg_ratio + 1))
+        self.pos_per_batch = batch_size - self.neg_per_batch
 
         if shuffle_before_epoch:
-            self.rng = np.random.RandomState(seed)
+            self.rng = np.random.RandomState(shuffle_seed)
 
-    def _downsample_coords(self):
-        """
-        Creates a single list of downsampled indices, made according to the
-        specified strides across the positive and negative coordinate indices.
-        """
-        start = datetime.now()
-        ds_pos_coord_inds = self.pos_coord_inds[
-            self.pos_offset::self.pos_stride
-        ]
-        ds_neg_coord_inds = self.neg_coord_inds[
-            self.neg_offset::self.neg_stride
-        ]
-        ds_coord_inds = np.concatenate(
-            [ds_pos_coord_inds, ds_neg_coord_inds]
-        ).astype(int)
-        return ds_coord_inds
-    
     def __getitem__(self, index):
-        return self.coords[self.ds_coord_inds[
-            index * self.batch_size : (index + 1) * self.batch_size
-        ]]
+        """
+        Fetches a full batch of positive and negative bin indices. Returns
+        a B-array of bin indices, and a B-array of statuses. The status is
+        either 1 or 0: 1 if that bin has a positive binding event for some task,
+        and 0 if that bin has no binding events over all tasks.
+        """
+        pos_inds = self.pos_inds[
+            index * self.pos_per_batch : (index + 1) * self.pos_per_batch
+        ]
+        neg_inds = self.neg_inds[
+            index * self.neg_per_batch : (index + 1) * self.neg_per_batch
+        ]
+        bin_inds = np.concatenate([pos_inds, neg_inds])
+        status = np.concatenate([
+            np.ones(len(pos_inds), dtype=int),
+            np.zeros(len(neg_inds), dtype=int)
+        ])
+        return bin_inds, status
 
     def __len__(self):
-        num_pos = len(
-            range(self.pos_offset, len(self.pos_coord_inds), self.pos_stride)
-        )
-        num_neg = len(
-            range(self.neg_offset, len(self.neg_coord_inds), self.neg_stride)
-        )
-        total_len = num_pos + num_neg
-        return int(np.ceil(total_len / float(self.batch_size)))
+        return int(np.ceil(len(self.pos_inds) / self.pos_per_batch))
    
-    def _shuffle_downsample(self):
+    def _shuffle(self):
         """
-        Downsamples the indices and shuffles them. The offsets used to
-        downsample are incremented afterward.
+        Shuffles the positive and negative indices, if appropriate.
         """
-        self.ds_coord_inds = self._downsample_coords()
-        self.pos_offset = (self.pos_offset + 1) % self.pos_stride
-        self.neg_offset = (self.neg_offset + 1) % self.neg_stride
         if (self.shuffle_before_epoch):
-            self.rng.shuffle(self.ds_coord_inds)
+            self.rng.shuffle(self.pos_inds)
+            self.rng.shuffle(self.neg_inds)
 
     def on_epoch_start(self):
-        self._shuffle_downsample()
+        self._shuffle()
 
 
-class CoordDataset(torch.utils.data.IterableDataset):
+class BinDataset(torch.utils.data.IterableDataset):
     """
     Generates single samples of a one-hot encoded sequence and value.
     Arguments:
-        `coords_batcher (CoordsDownsampler): maps indices to batches of
-            coordinates
+        `bin_batcher (SamplingBinsBatcher): maps indices to batches of
+            bin indices
         `coords_to_seq (CoordsToSeq)`: maps coordinates to 1-hot encoded
             sequences
-        `coords_to_vals (CoordsToVals)`: maps coordinates to values to predict
+        `bins_to_vals (BinsToVals)`: maps bin indices to values to predict
         `revcomp`: whether or not to perform revcomp to the batch; this will
             double the batch size implicitly
         `return_coords`: if True, each batch returns the set of coordinates for
             that batch along with the 1-hot encoded sequences and values
     """
     def __init__(
-        self, coords_batcher, coords_to_seq, coords_to_vals, revcomp=False,
+        self, bins_batcher, coords_to_seq, bins_to_vals, revcomp=False,
         return_coords=False
     ):
-        self.coords_batcher = coords_batcher
+        self.bins_batcher = bins_batcher
         self.coords_to_seq = coords_to_seq
-        self.coords_to_vals = coords_to_vals
+        self.bins_to_vals = bins_to_vals
         self.revcomp = revcomp
         self.return_coords = return_coords
 
     def get_batch(self, index):
         """
-        Returns a batch, which is a pair of sequences and values, both 2D NumPy
-        arrays. Takes in a batch of coordinates (i.e. a Pandas MultiIndex)
+        Returns a batch, which consists of an B x L x 4 NumPy array of 1-hot
+        encoded sequence, the associated B x T values, and a 1D length-B NumPy
+        array of statuses. The coordinates may also be returned as a B x 3
+        array.
         """
-        # Get batch of coordinates for this index
-        coords_batch = self.coords_batcher[index]
+        # Get batch of bin indices for this index
+        bin_inds_batch, status = self.bins_batcher[index]
 
-        # Map this batch of coordinates to 1-hot encoded sequences
-        seqs = self.coords_to_seq(coords_batch, revcomp=self.revcomp)
+        # Map this batch of bin indices to coordinates and output values
+        coords, vals = self.bins_to_vals(bin_inds_batch)
 
-        # Map this batch of coordinates to the associated values
-        vals = self.coords_to_vals(coords_batch)
+        # Map the batch of coordinates to 1-hot encoded sequences
+        seqs = self.coords_to_seq(coords, revcomp=self.revcomp)
+
         if self.revcomp:
             vals = np.concatenate([vals, vals])
-        vals = vals.astype(np.int)
+            status = np.concatenate([status, status])
 
         if self.return_coords:
-            coords = coords_batch.values
             if self.revcomp:
                 coords = np.concatenate([coords, coords])
-            return seqs, vals, coords
+            return seqs, vals, status, coords
         else:
-            return seqs, vals
+            return seqs, vals, status
 
     def __iter__(self):
         """
@@ -258,7 +232,7 @@ class CoordDataset(torch.utils.data.IterableDataset):
         range.
         """
         worker_info = torch.utils.data.get_worker_info()
-        num_batches = len(self.coords_batcher)
+        num_batches = len(self.bins_batcher)
         if worker_info is None:
             # In single-processing mode
             start, end = 0, num_batches
@@ -271,82 +245,60 @@ class CoordDataset(torch.utils.data.IterableDataset):
         return (self.get_batch(i) for i in range(start, end))
 
     def __len__(self):
-        return len(self.coords_batcher)
+        return len(self.bins_batcher)
     
     def on_epoch_start(self):
         """
         This should be called manually before the beginning of every epoch (i.e.
         before the iteration begins).
         """
-        self.coords_batcher.on_epoch_start()
+        self.bins_batcher.on_epoch_start()
 
 
 @dataset_ex.capture
 def create_data_loader(
-    bedfile_path, batch_size, reference_fasta, input_length,
-    positive_stride, negative_stride, noise_prob, num_workers, revcomp,
-    dataset_seed, hastitle=True, shuffle=True, return_coords=False
+    labels_hdf5_path, batch_size, reference_fasta, input_length, negative_ratio,
+    num_workers, revcomp, shuffle_seed, chrom_set=None, shuffle=True,
+    return_coords=False
 ):
     """
-    From the path to a gzipped BED file containing coordinates and state labels,
-    returns an IterableDataset object. If `shuffle` is True, shuffle the dataset
-    before each epoch.
+    Creates an IterableDataset object, which iterates through batches of
+    bins and returns values for the bins.
+    Arguments:
+        `labels_hdf5_path`: path to HDF5 containing labels; this HDF5 must be a
+            single dataset created by `generate_ENCODE_TFChIP_binary_labels.sh`;
+            each row must be: (index, values, end, start, chrom), where the
+            values is a T-array of values, for each task T, containing 0, 1, or
+            nan
+        `chrom_set`: a list of chromosomes to restrict to for the positives and
+            negatives; defaults to all coordinates in HDF5
+        `shuffle`: if specified, shuffle the coordinates before each epoch
+        `return_coords`: if specified, also return the underlying coordinates
+            along with the values in each batch
     """
-    # Maps set of coordinates to state values, imported from a BED file
-    coords_to_vals = CoordsToVals(
-        bedfile_path, hastitle=hastitle, noise_prob=noise_prob
+    # Maps set of bin indices to values and coordinates
+    bins_to_vals = BinsToVals(labels_hdf5_path)
+
+    # Yields batches of positive and negative bin indices
+    bins_batcher = SamplingBinsBatcher(
+        labels_hdf5_path, batch_size, negative_ratio, chroms_keep=chrom_set,
+        shuffle_before_epoch=shuffle, shuffle_seed=shuffle_seed
     )
 
-    # Get the set of coordinates as a Pandas MultiIndex and pass it to the
-    # coordinate batcher
-    coord_val_table = coords_to_vals.coord_val_table
-    coords = coord_val_table.index 
-
-    print("\tGetting positive and negative rows...", end=" ", flush=True)
-    start = datetime.now()
-    val_matrix = coord_val_table.values
-    pos_coord_bools = np.any(val_matrix == 1, axis=1)
-    neg_coord_bools = np.all(val_matrix == 0, axis=1)
-    pos_coord_inds = np.where(pos_coord_bools)[0]
-    neg_coord_inds = np.where(neg_coord_bools)[0]
-    print(str((datetime.now() - start).seconds) + "s")
-
-    # For statistical purposes, compute the number of positives and negatives
-    print("\tGetting positive and negative counts...", end=" ", flush=True)
-    start = datetime.now()
-    num_pos = len(np.where(val_matrix == 1)[0])
-    num_neg = len(np.where(val_matrix == 0)[0])
-    print(str((datetime.now() - start).seconds) + "s")
-    print(
-        "\tTotal coordinate counts by entry: %d + and %d -" % \
-        (num_pos, num_neg)
-    )
-    print(
-        "\tTotal coordinate counts by row: %d + and %d -" % \
-        (len(pos_coord_inds), len(neg_coord_inds))
-    )
-    print(
-        "\tEstimated downsampled counts by row: %d + and %d -" % \
-        (
-            int(len(pos_coord_inds) / positive_stride),
-            int(len(neg_coord_inds) / negative_stride)
-        )
-    )
-
-    coords_batcher = CoordsDownsampler(
-        coords, pos_coord_inds, neg_coord_inds, batch_size,
-        shuffle_before_epoch=shuffle, neg_stride=negative_stride,
-        pos_stride=positive_stride, seed=dataset_seed
-    )
+    print("Total class counts:")
+    num_pos, num_neg = len(bins_batcher.pos_inds), len(bins_batcher.neg_inds)
+    print("Pos: %d\nNeg: %d" % (num_pos, num_neg))
+    if num_pos:
+        print("Neg/Pos = %f" % (num_neg / num_pos))
 
     # Maps set of coordinates to 1-hot encoding, padded
     coords_to_seq = util.CoordsToSeq(
         reference_fasta, center_size_to_use=input_length
     )
-
+    
     # Dataset
-    dataset = CoordDataset(
-        coords_batcher, coords_to_seq, coords_to_vals, revcomp=revcomp,
+    dataset = BinDataset(
+        bins_batcher, coords_to_seq, bins_to_vals, revcomp=revcomp,
         return_coords=return_coords
     )
 
@@ -366,21 +318,49 @@ def main():
     global data, loader
     import os
     import tqdm
+    import json
 
-    tfname = "SPI1"
+    paths_json_path = "/users/amtseng/att_priors/data/processed/ENCODE_TFChIP/binary/config/SPI1/SPI1_training_paths.json"
+    
+    with open(paths_json_path, "r") as f:
+        paths_json = json.load(f)
+    labels_hdf5 = paths_json["labels_hdf5"]
 
-    base_path = "/users/amtseng/att_priors/data/interim/ENCODE/binary/labels/"
+    splits_json_path = "/users/amtseng/att_priors/data/processed/chrom_splits.json"
+    with open(splits_json_path, "r") as f:
+        splits_json = json.load(f)
+    train_chroms, val_chroms, test_chroms = \
+        splits_json["1"]["train"], splits_json["1"]["val"], \
+        splits_json["1"]["test"]
 
-    # ENCODE:
-    bedfile = os.path.join(
-        base_path, "{0}/{0}_val_labels.bed.gz".format(tfname)
+    loader = create_data_loader(
+        labels_hdf5, return_coords=True, chrom_set=None, shuffle_seed=123
     )
-
-    loader = create_data_loader(bedfile, return_coords=True)
     loader.dataset.on_epoch_start()
+
     start_time = datetime.now()
     for batch in tqdm.tqdm(loader, total=len(loader.dataset)):
         data = batch
-        break  # Just one batch to test
+        break
     end_time = datetime.now()
     print("Time: %ds" % (end_time - start_time).seconds)
+
+    k = 2
+    rc_k = int(len(data[0]) / 2) + k
+
+    seqs, vals, statuses, coords = data
+    
+    seq, val, status, coord = seqs[k], vals[k], statuses[k], coords[k]
+    rc_seq, rc_val, rc_status, rc_coord = \
+        seqs[rc_k], vals[rc_k], statuses[rc_k], coords[rc_k]
+
+    def print_one_hot_seq(one_hot):
+        s = util.one_hot_to_seq(one_hot)
+        print(s[:20] + "..." + s[-20:])
+   
+    print_one_hot_seq(seq)
+    print_one_hot_seq(rc_seq)
+
+    print(np.sum(val), np.sum(rc_val))
+    print(status, rc_status)
+    print(coord, rc_coord)

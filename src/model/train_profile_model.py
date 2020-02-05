@@ -35,7 +35,7 @@ def config(dataset):
 
     # Number of filters to use for each dilating convolutional layer (i.e.
     # number of channels to output)
-    dil_conv_depths = [64] * num_dil_conv_layers
+    dil_conv_depths = [128] * num_dil_conv_layers
 
     # Dilation values for each of the dilating convolutional layers
     dil_conv_dilations = [2 ** i for i in range(num_dil_conv_layers)]
@@ -221,18 +221,19 @@ def model_loss(
 @train_ex.capture
 def run_epoch(
     data_loader, mode, model, epoch_num, num_tasks, use_controls,
-    att_prior_loss_weight, batch_size, revcomp, profile_length, optimizer=None,
-    return_data=False
+    att_prior_loss_weight, batch_size, revcomp, input_length, input_depth,
+    profile_length, optimizer=None, return_data=False
 ):
     """
     Runs the data from the data loader once through the model, to train,
     validate, or predict.
     Arguments:
         `data_loader`: an instantiated `DataLoader` instance that gives batches
-            of data; each batch must yield the input sequences, profiles, and
-            statuses; if `use_controls` is True, profiles must be such that the
-            first half are prediction (target) profiles, and the second half are
-            control profiles; otherwise, all tasks are prediction profiles
+            of data; each batch must yield the input sequences, profiles,
+            statuses, coordinates, and peaks; if `use_controls` is True,
+            profiles must be such that the first half are prediction (target)
+            profiles, and the second half are control profiles; otherwise, all
+            tasks are prediction profiles
         `mode`: one of "train", "eval"; if "train", run the epoch and perform
             backpropagation; if "eval", only do evaluation
         `model`: the current PyTorch model being trained/evaluated
@@ -277,8 +278,8 @@ def run_epoch(
         all_log_pred_counts = np.empty(count_shape)
         all_true_profs = np.empty(profile_shape)
         all_true_counts = np.empty(count_shape)
-        all_input_seqs = np.empty((num_samples_exp, 1346, 4))
-        all_input_grads = np.empty((num_samples_exp, 1346, 4))
+        all_input_seqs = np.empty((num_samples_exp, input_length, input_depth))
+        all_input_grads = np.empty((num_samples_exp, input_length, input_depth))
         all_coords = np.empty((num_samples_exp, 3), dtype=object)
         num_samples_seen = 0  # Real number of samples seen
 

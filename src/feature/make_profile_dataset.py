@@ -550,9 +550,9 @@ class CoordDataset(torch.utils.data.IterableDataset):
     def get_batch(self, index):
         """
         Returns a batch, which consists of an B x L x 4 NumPy array of 1-hot
-        encoded sequence, the associated profiles, and a 1D length-N NumPy array
+        encoded sequence, the associated profiles, and a 1D length-B NumPy array
         of statuses. The profiles will be a B x L x S x 2 array of profiles. The
-        coordinates and peaks may also be returned.
+        coordinates and peaks may also be returned as a B x 3 array.
         """
         # Get batch of coordinates for this index
         if self.return_coords:

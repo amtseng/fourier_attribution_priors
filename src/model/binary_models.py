@@ -5,7 +5,7 @@ import scipy.special
 import scipy.ndimage
 from model.util import place_tensor, sanitize_sacred_arguments, smooth_tensor_1d
 
-class BinaryTFBindingPredictor(torch.nn.Module):
+class BinaryPredictor(torch.nn.Module):
 
     def __init__(
         self, input_length, input_depth, num_conv_layers, conv_filter_sizes,
@@ -168,8 +168,6 @@ class BinaryTFBindingPredictor(torch.nn.Module):
 
         return logits
 
-        return probs
-
 
     def correctness_loss(
         self, true_vals, logit_pred_vals, average_classes=False
@@ -177,7 +175,7 @@ class BinaryTFBindingPredictor(torch.nn.Module):
         """
         Computes the binary cross-entropy loss.
         Arguments:
-            `true_seqs`: a B x T tensor, where B is the batch size and C is the
+            `true_seqs`: a B x T tensor, where B is the batch size and T is the
                 number of output tasks, containing the true binary values
             `logit_pred_vals`: a B x T tensor containing the predicted LOGITS
                 for each output and task
@@ -216,13 +214,13 @@ class BinaryTFBindingPredictor(torch.nn.Module):
 
             return self.bce_loss(probs_flat, true_vals_flat)
 
-
-    def att_prior_loss(
-        self, status, input_grads, pos_limit, pos_weight,
+    def fourier_att_prior_loss(
+        self, status, input_grads, freq_limit, limit_softness,
         att_prior_grad_smooth_sigma
     ):
         """
-        Computes an attribution prior loss for some given training examples.
+        Computes an attribution prior loss for some given training examples,
+        using a Fourier transform form.
         Arguments:
             `status`: a B-tensor, where B is the batch size; each entry is 1 if
                 that example is to be treated as a positive example, and 0
@@ -232,51 +230,56 @@ class BinaryTFBindingPredictor(torch.nn.Module):
                 input base; this needs to be the gradients of the input with
                 respect to the output (for multiple tasks, this gradient needs
                 to be aggregated); this should be *gradient times input*
-            `pos_limit`: the maximum integer frequency index, k, to consider for
-                the positive loss; this corresponds to a frequency cut-off of
-                pi * k / L; k should be less than L / 2
-            `pos_weight`: the amount to weight the positive loss by, to give it
-                a similar scale as the negative loss
+            `freq_limit`: the maximum integer frequency index, k, to consider for
+                the loss; this corresponds to a frequency cut-off of pi * k / L;
+                k should be less than L / 2
+            `limit_softness`: amount to soften the limit by, using a hill
+                function; None means no softness
             `att_prior_grad_smooth_sigma`: amount to smooth the gradient before
                 computing the loss
         Returns a single scalar Tensor consisting of the attribution loss for
         the batch.
         """
-        max_rect_grads = torch.max(self.relu(input_grads), dim=2)[0]
+        abs_grads = torch.sum(torch.abs(input_grads), dim=2)
+
         # Smooth the gradients
-        max_rect_grads_smooth = smooth_tensor_1d(
-            max_rect_grads, att_prior_grad_smooth_sigma
+        grads_smooth = smooth_tensor_1d(
+            abs_grads, att_prior_grad_smooth_sigma
         )
 
-        neg_grads = max_rect_grads_smooth[status == 0]
-        pos_grads = max_rect_grads_smooth[status == 1]
+        # Only do the positives
+        pos_grads = grads_smooth[status == 1]
 
         # Loss for positives
         if pos_grads.nelement():
-            pos_grads_complex = torch.stack(
-                [pos_grads, place_tensor(torch.zeros(pos_grads.size()))], dim=2
-            )  # Convert to complex number format: a -> a + 0i
-            # Magnitude of the Fourier coefficients, normalized:
-            pos_fft = torch.fft(pos_grads_complex, 1)
+            pos_fft = torch.rfft(pos_grads, 1)
             pos_mags = torch.norm(pos_fft, dim=2)
             pos_mag_sum = torch.sum(pos_mags, dim=1, keepdim=True)
             pos_mag_sum[pos_mag_sum == 0] = 1  # Keep 0s when the sum is 0
             pos_mags = pos_mags / pos_mag_sum
-            # Cut off DC and high-frequency components:
-            pos_mags = pos_mags[:, 1:pos_limit]
-            pos_score = torch.sum(pos_mags, dim=1)
-            pos_loss = 1 - pos_score
-            pos_loss_mean = torch.mean(pos_loss)
-        else:
-            pos_loss_mean = 0
-        # Loss for negatives
-        if neg_grads.nelement():
-            neg_loss = torch.sum(neg_grads, dim=1)
-            neg_loss_mean = torch.mean(neg_loss)
-        else:
-            neg_loss_mean = 0
 
-        return (pos_weight * pos_loss_mean) + neg_loss_mean
+            # Cut off DC
+            pos_mags = pos_mags[:, 1:]
+
+            # Construct weight vector
+            weights = place_tensor(torch.ones_like(pos_mags))
+            if limit_softness is None:
+                weights[:, freq_limit:] = 0
+            else:
+                x = place_tensor(
+                    torch.arange(1, pos_mags.size(1) - freq_limit + 1)
+                ).float()
+                weights[:, freq_limit:] = 1 / (1 + torch.pow(x, limit_softness))
+
+            # Multiply frequency magnitudes by weights
+            pos_weighted_mags = pos_mags * weights
+
+            # Add up along frequency axis to get score
+            pos_score = torch.sum(pos_weighted_mags, dim=1)
+            pos_loss = 1 - pos_score
+            return torch.mean(pos_loss)
+        else:
+            return place_tensor(torch.zeros(1))
 
 
 def binary_logits_to_probs(logit_pred_vals):

@@ -1,5 +1,3 @@
-set -beEo pipefail
-
 tfname=$1
 indir=/users/amtseng/att_priors/data/raw/ENCODE_TFChIP/$tfname/tf_chipseq
 outdir=/users/amtseng/att_priors/data/processed/ENCODE_TFChIP/binary/labels/$tfname
@@ -53,14 +51,6 @@ genomewide_labels --task_list $taskfile \
 				  --allow_ambiguous \
 				  --labeling_approach peak_percent_overlap_with_bin_classification
 
-echo "Converting HDF5 to gzipped BED files..."
-python $scriptdir/hdf5_to_bed.py -i $outdir/labels.hdf5 -o $outdir/$tfname\_all_labels.bed.gz -z
-
-echo "Splitting into training and validation..."
-zcat $outdir/$tfname\_all_labels.bed.gz | awk '$1 ~ /^(chr|chr2|chr3|chr4|chr5|chr6|chr7|chr9|chr11|chr12|chr13|chr14|chr15|chr16|chr17|chr18|chr19|chr20|chr22|chrX|chrY|chrM)$/' | gzip > $outdir/$tfname\_train_labels.bed.gz
-zcat $outdir/$tfname\_all_labels.bed.gz | awk '$1 ~ /^(chr|chr1|chr8|chr21)$/' | gzip > $outdir/$tfname\_val_labels.bed.gz
-
 # Cleanup
 rm -rf $outdir/peaks
 rm $taskfile
-rm $outdir/labels.hdf5

@@ -47,6 +47,15 @@ def config(dataset):
 
     # Number of hidden nodes in each fully-connected layer
     fc_sizes = [50, 15]
+    
+    # Whether to apply batch normalization
+    batch_norm = True
+
+    # Convolutional layer dropout rate
+    conv_drop_rate = 0.0
+    
+    # Fully-connected layer dropout rate
+    fc_drop_rate = 0.0
 
     # Number of outputs to predict
     num_tasks = 4
@@ -55,30 +64,30 @@ def config(dataset):
     avg_class_loss = True
 
     # Weight to use for attribution prior loss; set to 0 to not use att. priors
-    att_prior_loss_weight = 1.0
+    att_prior_loss_weight = 1
 
-    # Annealing factor for attribution prior loss weight: e^(-factor * epoch);
-    # set to 0 for no annealing
-    att_prior_loss_weight_anneal = 0.5
+    # Type of annealing; can be None (constant/no annealing), "inflate" (follows
+    # `2/(1 + e^(-c*x)) - 1`), or "deflate" (follows `e^(-c * x)`)
+    att_prior_loss_weight_anneal_type = None
+
+    # Annealing factor for attribution prior loss weight, c
+    if att_prior_loss_weight_anneal_type is None:
+        att_prior_loss_weight_anneal_speed = None
+    elif att_prior_loss_weight_anneal_type == "inflate":
+        att_prior_loss_weight_anneal_speed = 1
+    elif att_prior_loss_weight_anneal_type == "deflate":
+        att_prior_loss_weight_anneal_speed = 0.3
 
     # Smoothing amount for gradients before computing attribution prior loss;
     # Smoothing window size is 1 + (2 * sigma); set to 0 for no smoothing
     att_prior_grad_smooth_sigma = 3
 
-    # Maximum frequency integer to consider for a positive attribution prior
-    att_prior_pos_limit = 160
+    # Maximum frequency integer to consider for a Fourier attribution prior
+    fourier_att_prior_freq_limit = 200
 
-    # Weight for positives within the attribution prior loss
-    att_prior_pos_weight = 0.1
-
-    # Whether to apply batch normalization
-    batch_norm = True
-
-    # Convolutional layer dropout rate
-    conv_drop_rate = 0.0
-    
-    # Fully-connected layer dropout rate
-    fc_drop_rate = 0.2
+    # Amount to soften the Fourier attribution prior loss limit; set to None
+    # to not soften; softness decays like 1 / (1 + x^c) after the limit
+    fourier_att_prior_freq_limit_softness = 0.2
 
     # Number of training epochs
     num_epochs = 10
@@ -96,22 +105,25 @@ def config(dataset):
     early_stop_min_delta = 0.001
 
     # Training seed
-    train_seed = None # 20190905
+    train_seed = None
 
-    # Imported from make_binary_dataset
-    input_length = dataset["input_length"]
-    
-    # Imported from make_binary_dataset
-    input_depth = dataset["input_depth"]
-    
-    # Imported from make_binary_dataset
+    # If set, ignore correctness loss completely
+    att_prior_loss_only = False
+
+    # Imported from make_profile_dataset
     batch_size = dataset["batch_size"]
 
-    # Imported from make_binary_dataset
+    # Imported from make_profile_dataset
     revcomp = dataset["revcomp"]
 
+    # Imported from make_profile_dataset
+    input_length = dataset["input_length"]
+    
+    # Imported from make_profile_dataset
+    input_depth = dataset["input_depth"]
+
     # Imported from make_binary_dataset
-    val_neg_downsample = dataset["negative_stride"]
+    negative_ratio = dataset["negative_ratio"]
 
 
 @train_ex.capture
@@ -123,7 +135,7 @@ def create_model(
     """
     Creates a binary model using the configuration above.
     """
-    bin_model = binary_models.BinaryTFBindingPredictor(
+    bin_model = binary_models.BinaryPredictor(
         input_length=input_length,
         input_depth=input_depth,
         num_conv_layers=num_conv_layers,
@@ -145,11 +157,11 @@ def create_model(
 
 @train_ex.capture
 def model_loss(
-    model, true_vals, logit_pred_vals, status, input_grads, epoch_num,
-    avg_class_loss, att_prior_loss_weight, att_prior_pos_limit,
-    att_prior_pos_weight, att_prior_loss_weight_anneal,
-    att_prior_grad_smooth_sigma,
-    return_loss_parts=False
+    model, true_vals, logit_pred_vals, epoch_num, avg_class_loss,
+    att_prior_loss_weight, att_prior_loss_weight_anneal_type,
+    att_prior_loss_weight_anneal_speed, att_prior_grad_smooth_sigma,
+    fourier_att_prior_freq_limit, fourier_att_prior_freq_limit_softness,
+    att_prior_loss_only, input_grads=None, status=None
 ):
     """
     Computes the loss for the model.
@@ -158,58 +170,75 @@ def model_loss(
         `true_vals`: a B x T tensor, where B is the batch size and T is the
             number of output tasks, containing the true binary values
         `logit_pred_vals`: a B x T tensor containing the predicted logits
-        `status`: a B-tensor, where B is the batch size; each entry is 1 if that
-            that example is to be treated as a positive example, and 0 otherwise
-        `input_grads`: a B x L x D tensor, where L is the output length and D is
-            the input depth; this is the gradient of the output with respect to
-            the input, times the input itself
         `epoch_num`: a 0-indexed integer representing the current epoch
-    Returns a scalar Tensor containing the loss for the given batch, as well as
-    a pair consisting of the correctness loss and the attribution prior loss.
+        `input_grads`: a B x I x D tensor, where I is the input length and D is
+            the input depth; this is the gradient of the output with respect to
+            the input, times the input itself; only needed when attribution
+            prior loss weight is positive
+        `status`: a B-tensor, where B is the batch size; each entry is 1 if that
+            that example is to be treated as a positive example, 0 if negative,
+            and -1 if ambiguous; only needed when attribution prior loss weight
+            is positive
+    Returns a scalar Tensor containing the loss for the given batch, and a pair
+    consisting of the correctness loss and the attribution prior loss.
     If the attribution prior loss is not computed at all, then 0 will be in its
     place, instead.
     """
     corr_loss = model.correctness_loss(
         true_vals, logit_pred_vals, avg_class_loss
     )
-   
+    
     if not att_prior_loss_weight:
         return corr_loss, (corr_loss, torch.zeros(1))
-    
-    att_prior_loss = model.att_prior_loss(
-        status, input_grads, att_prior_pos_limit, att_prior_pos_weight,
-        att_prior_grad_smooth_sigma
+   
+    att_prior_loss = model.fourier_att_prior_loss(
+        status, input_grads, fourier_att_prior_freq_limit,
+        fourier_att_prior_freq_limit_softness, att_prior_grad_smooth_sigma
     )
-    weight = att_prior_loss_weight * \
-        np.exp(-att_prior_loss_weight_anneal * epoch_num)
-    final_loss = corr_loss + (weight * att_prior_loss)
+    
+    if att_prior_loss_weight_anneal_type is None:
+        weight = att_prior_loss_weight
+    elif att_prior_loss_weight_anneal_type == "inflate":
+        exp = np.exp(-att_prior_loss_weight_anneal_speed * epoch_num)
+        weight = att_prior_loss_weight * ((2 / (1 + exp)) - 1)
+    elif att_prior_loss_weight_anneal_type == "deflate":
+        exp = np.exp(-att_prior_loss_weight_anneal_speed * epoch_num)
+        weight = att_prior_loss_weight * exp
+
+    if att_prior_loss_only:
+        final_loss = att_prior_loss
+    else:
+        final_loss = corr_loss + (weight * att_prior_loss)
+
     return final_loss, (corr_loss, att_prior_loss)
 
 
 @train_ex.capture
 def run_epoch(
     data_loader, mode, model, epoch_num, num_tasks, att_prior_loss_weight,
-    batch_size, revcomp, optimizer=None, return_data=False
+    batch_size, revcomp, input_length, input_depth, optimizer=None,
+    return_data=False
 ):
     """
     Runs the data from the data loader once through the model, to train,
     validate, or predict.
     Arguments:
         `data_loader`: an instantiated `DataLoader` instance that gives batches
-            of data; each batch must yield the input sequences and the output
-            values
+            of data; each batch must yield the input sequences, the output
+            values, the status, and coordinates
         `mode`: one of "train", "eval"; if "train", run the epoch and perform
             backpropagation; if "eval", only do evaluation
         `model`: the current PyTorch model being trained/evaluated
         `epoch_num`: 0-indexed integer representing the current epoch
         `optimizer`: an instantiated PyTorch optimizer, for training mode
         `return_data`: if specified, returns the following as NumPy arrays:
-            true binding values, predicted binding values
-    Returns a list of losses for the batches, a list of correction losses
-    specifically for the batches, and a list of attribution prior losses
-    specifically for the batches. If the attribution prior loss is not computed,
-    then the list will have all 0s. If `return_data` is True, then more things
-    will be returned after these.
+            true binding values (0, 1, or -1), predicted binding probabilities,
+            input sequences, input gradients (if the attribution prior loss is
+            not used, these will all be garbage), and coordinates used
+    Returns lists of overall losses, correctness losses, and attribution prior
+    losses, where each list is over all batches. If the attribution prior loss
+    is not computed, then it will be all 0s. If `return_data` is True, then more
+    things will be returned after these.
     """
     assert mode in ("train", "eval")
     if mode == "train":
@@ -235,38 +264,55 @@ def run_epoch(
         # Real number of samples can be smaller because of partial last batch
         all_true_vals = np.empty((num_samples_exp, num_tasks))
         all_pred_vals = np.empty((num_samples_exp, num_tasks))
+        all_input_seqs = np.empty((num_samples_exp, input_length, input_depth))
+        all_input_grads = np.empty((num_samples_exp, input_length, input_depth))
+        all_coords = np.empty((num_samples_exp, 3), dtype=object)
         num_samples_seen = 0  # Real number of samples seen
 
-    for input_seqs, output_vals in t_iter:
-        batch_size = output_vals.shape[0]
+    for input_seqs, output_vals, statuses, coords in t_iter:
+        if return_data:
+            input_seqs_np = input_seqs
+            output_vals_np = output_vals
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
-        output_vals_np = output_vals  # Save a NumPy copy
         output_vals = util.place_tensor(torch.tensor(output_vals)).float()
-        
+
+        # Clear gradients from last batch if training
+        if mode == "train":
+            optimizer.zero_grad()
+        elif att_prior_loss_weight > 0:
+            # Not training mode, but we still need to zero out weights because
+            # we are computing the input gradients
+            model.zero_grad()
+
         if att_prior_loss_weight > 0:
             input_seqs.requires_grad = True  # Set gradient required
             logit_pred_vals = model(input_seqs)
-            model.zero_grad()  # Clear gradients
-            logit_pred_vals.backward(
-                util.place_tensor(torch.ones(logit_pred_vals.size())),
-                retain_graph=True
-            )  # Sum gradients across tasks
-            input_grads = input_seqs.grad * input_seqs  # Gradient * input
-            status = -np.ones(batch_size)
-            status[np.any(output_vals_np == 1, axis=1)] = 1
-            status[np.all(output_vals_np == 0, axis=1)] = 0
-            status = util.place_tensor(torch.tensor(status))
+            # Compute the gradients of the output with respect to the input
+            input_grads, = torch.autograd.grad(
+                logit_pred_vals, input_seqs,
+                grad_outputs=util.place_tensor(
+                    torch.ones(logit_pred_vals.size())
+                ),
+                retain_graph=True, create_graph=True
+                # We'll be operating on the gradient itself, so we need to
+                # create the graph
+                # Gradients are summed across strands and tasks
+            )
+            if return_data:
+                input_grads_np = input_grads.detach().cpu().numpy()
+            input_grads = input_grads * input_seqs  # Gradient * input
+            status = util.place_tensor(torch.tensor(statuses))
             input_seqs.requires_grad = False  # Reset gradient required
         else:
             logit_pred_vals = model(input_seqs)
             status, input_grads = None, None
 
         loss, (corr_loss, att_loss) = model_loss(
-            model, output_vals, logit_pred_vals, status, input_grads, epoch_num
+            model, output_vals, logit_pred_vals, epoch_num, status=status,
+            input_grads=input_grads
         )
-        
+
         if mode == "train":
-            optimizer.zero_grad()  # Clear gradients from last batch
             loss.backward()  # Compute gradient
             optimizer.step()  # Update weights through backprop
 
@@ -278,16 +324,21 @@ def run_epoch(
         )
 
         if return_data:
-            true_vals = output_vals.detach().cpu().numpy()
-            logit_pred_vals = logit_pred_vals.detach().cpu().numpy()
-            # Convert logits to probabilities
-            pred_vals = binary_models.binary_logits_to_probs(logit_pred_vals)
-            num_in_batch = true_vals.shape[0]
+            logit_pred_vals_np = logit_pred_vals.detach().cpu().numpy()
+          
+            # Turn logits into probabilities
+            pred_vals = binary_models.binary_logits_to_probs(logit_pred_vals_np)
+            num_in_batch = pred_vals.shape[0]
 
             # Fill in the batch data/outputs into the preallocated arrays
             start, end = num_samples_seen, num_samples_seen + num_in_batch
-            all_true_vals[start:end] = true_vals
+            all_true_vals[start:end] = output_vals_np
             all_pred_vals[start:end] = pred_vals
+            all_input_seqs[start:end] = input_seqs_np
+            if att_prior_loss_weight:
+                all_input_grads[start:end] = input_grads_np
+            all_coords[start:end] = coords
+
             num_samples_seen += num_in_batch
 
     if return_data:
@@ -295,25 +346,29 @@ def run_epoch(
         # samples actually seen
         all_true_vals = all_true_vals[:num_samples_seen]
         all_pred_vals = all_pred_vals[:num_samples_seen]
-        return batch_losses, corr_losses, att_losses, all_true_vals,\
-            all_pred_vals
+        all_input_seqs = all_input_seqs[:num_samples_seen]
+        all_input_grads = all_input_grads[:num_samples_seen]
+        all_coords = all_coords[:num_samples_seen]
+        return batch_losses, corr_losses, att_losses, all_true_vals, \
+            all_pred_vals, all_input_seqs, all_input_grads, all_coords
     else:
         return batch_losses, corr_losses, att_losses
 
 
 @train_ex.capture
-def train(
-    train_loader, val_loader, num_epochs, learning_rate, early_stopping,
-    early_stop_hist_len, early_stop_min_delta, train_seed, val_neg_downsample,
-    _run
+def train_model(
+    train_loader, val_loader, test_loader, num_epochs, learning_rate,
+    early_stopping, early_stop_hist_len, early_stop_min_delta, train_seed,
+    negative_ratio, _run
 ):
     """
     Trains the network for the given training and validation data.
     Arguments:
-        `train_loader` (DataLoader): a data loader for the training data, each
-            batch giving the 1-hot encoded sequence and values
-        `val_loader` (DataLoader): a data loader for the validation data, each
-            batch giving the 1-hot encoded sequence and values
+        `train_loader` (DataLoader): a data loader for the training data
+        `val_loader` (DataLoader): a data loader for the validation data
+        `test_loader` (DataLoader): a data loader for the test data
+    Note that all data loaders are expected to yield the 1-hot encoded
+    sequences, output values, source coordinates, and source peaks.
     """
     run_num = _run._id
     output_dir = os.path.join(MODEL_DIR, str(run_num))
@@ -339,6 +394,7 @@ def train(
         t_batch_losses, t_corr_losses, t_att_losses = run_epoch(
             train_loader, "train", model, epoch, optimizer=optimizer
         )
+
         train_epoch_loss = np.nanmean(t_batch_losses)
         print(
             "Train epoch %d: average loss = %6.10f" % (
@@ -388,29 +444,52 @@ def train(
                     break  # Not improving enough
 
     # Compute evaluation metrics and log them
-    print("Computing final validation metrics:")
-    _, _, _, true_vals, pred_vals = run_epoch(
-        val_loader, "eval", model, float("inf"), return_data=True
-        # Don't use attribution prior loss at all
+    print("Computing test metrics:")
+    batch_losses, corr_losses, att_losses, true_vals, pred_vals, input_seqs, \
+        input_grads, coords = run_epoch(
+            test_loader, "eval", model, 0, return_data=True
+            # Don't use attribution prior loss when computing final loss
     )
+    _run.log_scalar("test_batch_losses", batch_losses)
+    _run.log_scalar("test_corr_losses", corr_losses)
+    _run.log_scalar("test_att_losses", att_losses)
+
     metrics = binary_performance.compute_performance_metrics(
-        true_vals, pred_vals, val_neg_downsample
+        true_vals, pred_vals, negative_ratio 
     )
     binary_performance.log_performance_metrics(metrics, _run)
 
 
 @train_ex.command
-def run_training(train_bed_path, val_bed_path):
-    print("Importing training data")
-    train_loader = make_binary_dataset.create_data_loader(train_bed_path)
-    print("Importing validation data")
-    val_loader = make_binary_dataset.create_data_loader(val_bed_path)
-    print("Training")
-    train(train_loader, val_loader)
+def run_training(labels_hdf5, train_chroms, val_chroms, test_chroms):
+    print("CREATING TRAIN LOADER...")
+    train_loader = make_binary_dataset.create_data_loader(
+        labels_hdf5, return_coords=True, chrom_set=train_chroms
+    )
+    print("CREATING VALIDATION LOADER...")
+    val_loader = make_binary_dataset.create_data_loader(
+        labels_hdf5, return_coords=True, chrom_set=val_chroms
+    )
+    print("CREATING TEST LOADER...")
+    test_loader = make_binary_dataset.create_data_loader(
+        labels_hdf5, return_coords=True, chrom_set=test_chroms
+    )
+    train_model(train_loader, val_loader, test_loader)
 
 
 @train_ex.automain
 def main():
-    train_bedfile = "/users/amtseng/att_priors/data/interim/ENCODE/binary/tests/SPI1_test_2000.bed.gz"
-    val_bedfile = train_bedfile
-    run_training(train_bedfile, val_bedfile)
+    import json
+    paths_json_path = "/users/amtseng/att_priors/data/processed/ENCODE_TFChIP/binary/config/SPI1/SPI1_training_paths.json"
+    with open(paths_json_path, "r") as f:
+        paths_json = json.load(f)
+    labels_hdf5 = paths_json["labels_hdf5"]
+    
+    splits_json_path = "/users/amtseng/att_priors/data/processed/chrom_splits.json"
+    with open(splits_json_path, "r") as f:
+        splits_json = json.load(f)
+    train_chroms, val_chroms, test_chroms = \
+        splits_json["1"]["train"], splits_json["1"]["val"], \
+        splits_json["1"]["test"]
+
+    run_training(labels_hdf5, train_chroms, val_chroms, test_chroms)
