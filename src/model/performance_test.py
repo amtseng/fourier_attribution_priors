@@ -5,6 +5,7 @@ import scipy.spatial.distance
 import torch
 import model.profile_performance as profile_performance
 import model.profile_models as profile_models
+import model.binary_performance as binary_performance
 from datetime import datetime
 import warnings
 import sacred
@@ -104,7 +105,7 @@ def test_vectorized_multinomial_nll():
             nll_torch[i][j] = np.mean([nll_0, nll_1])
     b = datetime.now()
     print("\tTime to compute (PyTorch distributions): %ds" % (b - a).seconds)
-    print("\tSame results? %s" % (
+    print("\tSame result? %s" % (
         np.allclose(nll_vec_np, nll_vec_tc) and \
         np.allclose(nll_vec_tc, nll_torch)
     ))

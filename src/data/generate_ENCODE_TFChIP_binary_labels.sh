@@ -39,7 +39,7 @@ done
 printf "Running label generator\n"
 
 genomewide_labels --task_list $taskfile \
-				  --outf $outdir/labels.hdf5 \
+				  --outf $outdir/$tfname\_labels.h5 \
 				  --output_type hdf5 \
 				  --chrom_sizes /users/amtseng/genomes/hg38.canon.chrom.sizes \
 				  --bin_stride 50 \

@@ -35,7 +35,8 @@ def config(dataset):
 
     # Number of filters to use for each dilating convolutional layer (i.e.
     # number of channels to output)
-    dil_conv_depths = [128] * num_dil_conv_layers
+    dil_conv_depth = 64
+    dil_conv_depths = [dil_conv_depth] * num_dil_conv_layers
 
     # Dilation values for each of the dilating convolutional layers
     dil_conv_dilations = [2 ** i for i in range(num_dil_conv_layers)]

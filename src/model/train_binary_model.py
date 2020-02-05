@@ -461,18 +461,20 @@ def train_model(
 
 
 @train_ex.command
-def run_training(labels_hdf5, train_chroms, val_chroms, test_chroms):
-    labels_array = make_binary_dataset.label_hdf5_to_label_array(labels_hdf5)
+def run_training(
+    labels_hdf5, bin_labels_npy, train_chroms, val_chroms, test_chroms
+):
+    bin_labels_array = np.load(bin_labels_npy, allow_pickle=True)
     train_loader = make_binary_dataset.create_data_loader(
-        labels_hdf5, return_coords=True, labels_array=labels_array,
+        labels_hdf5, bin_labels_array, return_coords=True,
         chrom_set=train_chroms
     )
     val_loader = make_binary_dataset.create_data_loader(
-        labels_hdf5, return_coords=True, labels_array=labels_array,
+        labels_hdf5, bin_labels_array, return_coords=True,
         chrom_set=val_chroms
     )
     test_loader = make_binary_dataset.create_data_loader(
-        labels_hdf5, return_coords=True, labels_array=labels_array,
+        labels_hdf5, bin_labels_array, return_coords=True,
         chrom_set=test_chroms
     )
     train_model(train_loader, val_loader, test_loader)
@@ -485,6 +487,7 @@ def main():
     with open(paths_json_path, "r") as f:
         paths_json = json.load(f)
     labels_hdf5 = paths_json["labels_hdf5"]
+    bin_labels_npy = paths_json["bin_labels_npy"]
     
     splits_json_path = "/users/amtseng/att_priors/data/processed/chrom_splits.json"
     with open(splits_json_path, "r") as f:
@@ -493,4 +496,6 @@ def main():
         splits_json["1"]["train"], splits_json["1"]["val"], \
         splits_json["1"]["test"]
 
-    run_training(labels_hdf5, train_chroms, val_chroms, test_chroms)
+    run_training(
+        labels_hdf5, bin_labels_npy, train_chroms, val_chroms, test_chroms
+    )
