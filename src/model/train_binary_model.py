@@ -462,17 +462,18 @@ def train_model(
 
 @train_ex.command
 def run_training(labels_hdf5, train_chroms, val_chroms, test_chroms):
-    print("CREATING TRAIN LOADER...")
+    labels_array = make_binary_dataset.label_hdf5_to_label_array(labels_hdf5)
     train_loader = make_binary_dataset.create_data_loader(
-        labels_hdf5, return_coords=True, chrom_set=train_chroms
+        labels_hdf5, return_coords=True, labels_array=labels_array,
+        chrom_set=train_chroms
     )
-    print("CREATING VALIDATION LOADER...")
     val_loader = make_binary_dataset.create_data_loader(
-        labels_hdf5, return_coords=True, chrom_set=val_chroms
+        labels_hdf5, return_coords=True, labels_array=labels_array,
+        chrom_set=val_chroms
     )
-    print("CREATING TEST LOADER...")
     test_loader = make_binary_dataset.create_data_loader(
-        labels_hdf5, return_coords=True, chrom_set=test_chroms
+        labels_hdf5, return_coords=True, labels_array=labels_array,
+        chrom_set=test_chroms
     )
     train_model(train_loader, val_loader, test_loader)
 
