@@ -119,7 +119,7 @@ def create_hdf5(
 )
 @click.option(
     "--base-path", "-b", default=None,
-    help="Path to directory containing BigWigs; defaults to /users/amtseng/att_priors/data/interim/ENCODE_DNase/{cell_type}/"
+    help="Path to directory containing BigWigs; defaults to /users/amtseng/att_priors/data/interim/ENCODE_DNase/profile/{cell_type}/"
 )
 @click.option(
     "--chrom-sizes-path", "-c",
@@ -143,7 +143,7 @@ def main(cell_type, base_path, chrom_sizes_path, out_path, chunk_size):
     key `bigwig_paths` stores the paths for the source BigWigs.
     """
     if not base_path: 
-        base_path = "/users/amtseng/att_priors/data/interim/ENCODE_DNase/%s" % cell_type 
+        base_path = "/users/amtseng/att_priors/data/interim/ENCODE_DNase/profile/%s" % cell_type 
     if not out_path:
         out_path = \
             "/users/amtseng/att_priors/data/processed/ENCODE_DNase/profile/labels/%s/%s_profiles.h5" % (cell_type, cell_type)

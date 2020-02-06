@@ -34,7 +34,8 @@ def config(dataset):
     
     # Number of filters to use at each convolutional level (i.e. number of
     # channels to output)
-    conv_depths = [50, 50, 50]
+    conv_depth = 50
+    conv_depths = [conv_depth, conv_depth, conv_depth]
 
     # Size max pool filter
     max_pool_size = 40

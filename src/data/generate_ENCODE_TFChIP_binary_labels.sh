@@ -4,8 +4,6 @@ outdir=/users/amtseng/att_priors/data/processed/ENCODE_TFChIP/binary/labels/$tfn
 
 bglimit=150000
 
-scriptdir=$(dirname $0)
-
 mkdir -p $outdir/peaks
 taskfile=$outdir/labelgen_tasks.tsv
 
@@ -26,7 +24,7 @@ do
 	ambibed=${outdir}/peaks/${expid}_${cline}_ambig.bed
 
 	printf "\tLimiting background set to top $bglimit peaks, and keeping only canonical contigs\n"
-	zcat $bgbed | head -n $bglimit | awk '$1 ~ /^(chr1|chr2|chr3|chr4|chr5|chr6|chr7|chr8|chr9|chr10|chr11|chr11|chr12|chr13|chr14|chr15|chr16|chr17|chr18|chr19|chr20|chr21|chr22|chrX|chrY|chrM)$/' | gzip > $bgcanbed
+	zcat $bgbed | sort -k7,7rn | head -n $bglimit | awk '$1 ~ /^(chr1|chr2|chr3|chr4|chr5|chr6|chr7|chr8|chr9|chr10|chr11|chr11|chr12|chr13|chr14|chr15|chr16|chr17|chr18|chr19|chr20|chr21|chr22|chrX|chrY|chrM)$/' | gzip > $bgcanbed
 	zcat $optbed | awk '$1 ~ /^(chr1|chr2|chr3|chr4|chr5|chr6|chr7|chr8|chr9|chr10|chr11|chr11|chr12|chr13|chr14|chr15|chr16|chr17|chr18|chr19|chr20|chr21|chr22|chrX|chrY|chrM)$/' | gzip > $optcanbed
 
 	printf "\tGenerating the ambiguous blacklist for $cline\n"
