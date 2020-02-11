@@ -1,24 +1,29 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: test
+  name: test-gpu
 spec:
   template:
     spec:
       containers:
-      - name: test-cont
+      - name: test-gpu
         image: kundajelab/genome-pytorch-sacred:gcp
         imagePullPolicy: Always
         resources:
           requests:
             memory: 10Gi
             cpu: 1
+            nvidia.com/gpu: 1
           limits:
             memory: 16Gi
             cpu: 3
+            nvidia.com/gpu: 1
         command:
-        - "/bin/bash"
-        - "-c"
-        - "python --version; sleep 10000"
+        - /bin/bash
+        - -c
+        args:
+        - echo "Beginning test-gpu";
+          gsutil cp gs://gbsc-gcp-lab-kundaje-user-amtseng-prj-ap/test/test_gpu.sh ~;
+          bash ~/test_gpu.sh;
       restartPolicy: Never
   backoffLimit: 0

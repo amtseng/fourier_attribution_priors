@@ -23,12 +23,12 @@
 	- Done through GUI online, created cluster `amtseng`
 	- Some specifications selected (outside of defaults):
 		- Zone: us-west1-a (us-central is default, but this can be slow)
-		- Storage permissions: read/write
 		- GPU pool:
 			- Autoscale nodes, [0, 16]
-			- 16 GB boot disk per node
-			- 1 Tesla P100 per node
 			- n1-standard-8 (i.e. 8 CPUs, 30 GB RAM) per node
+			- 1 Tesla P100 per node
+			- 28 GB boot disk per node
+			- Storage permissions: read/write
 - Connect `kubectl` to the cluster
 	- `gcloud container clusters get-credentials amtseng --zone us-west1-a`
 	- This draws credentials from the cluster and creates a `kubeconfig` entry so `kubectl` commands can access the cluster
@@ -51,10 +51,24 @@
 - Populate the bucket with data
 	- Done with script `populate_bucket.sh`
 	- Warning: this takes on the order of 30-60 minutes
+- Once a pod is created through `kubectl` (the `kubectl` that is connected to the cluster), the buckets associated with the project will be visible through `gsutil` automatically
 
 ### Creating a Docker image
 - The Docker image `kundajelab/genome-pytorch-sacred:gcp` was created (see `..docker/`)
 	- In addition to the training requirements, this image has `gcloud` installed, and has created the `/users/amtseng/` directory
+- `Dockerfile` contains the definition of the Docker image for training
+- `train_requirements.txt` is a file obtained by manually pruning the output of `pip freeze`, and is used to prepare the Docker image
+- The Docker image is built and pushed to `kundajelab/genome-pytorch-sacred:gcp` on DockerHub
+	- `docker build . -t kundajelab/genome-pytorch-sacred:gcp`
+	- `docker push kundajelab/genome-pytorch-sacred:gcp`
+- A note about updating images: unless otherwise specified, Kubernetes will use a cached image if the tag has already been pulled
 
-
-### Setting up a job
+### Test a job
+- Test scripts and YAMLs are in the the directory `test/`
+- Before running them, make sure that the scripts are copied to the bucket
+	- This can be done with `populate_bucket_test.sh`
+- `test_base` tests the basic ability to create a pod with the image, and pull data from the bucket
+- `test_gpu` tests the ability to run a simple GPU job and write results to the bucket
+- Warning: even with autoscale enabled, there must be at least one node running in the cluster for jobs to be submitted
+	- `gcloud container clusters resize amtseng --num-nodes 1 --node-pool gpu-pool --zone us-west1-a`
+	- Or through the console
