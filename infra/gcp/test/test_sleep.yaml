@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-sleep
+spec:
+  template:
+    spec:
+      containers:
+      - name: test-sleep
+        image: kundajelab/genome-pytorch-sacred:gcp
+        imagePullPolicy: Always
+        resources:
+          requests:
+            memory: 10Gi
+            cpu: 1
+          limits:
+            memory: 16Gi
+            cpu: 3
+        command:
+        - /bin/bash
+        - -c
+        args:
+        - echo "Beginning test-sleep";
+          sleep 10000;
+      restartPolicy: Never
+  backoffLimit: 0

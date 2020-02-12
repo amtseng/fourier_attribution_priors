@@ -4,7 +4,6 @@ import pandas as pd
 import sacred
 from datetime import datetime
 import h5py
-import pyBigWig
 import feature.util as util
 
 dataset_ex = sacred.Experiment("dataset")

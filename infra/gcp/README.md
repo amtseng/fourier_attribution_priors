@@ -49,9 +49,9 @@
 		- The full path to the keyfile must be specified
 	- To unmount, `fusermount -u ~/mounts/gbsc-gcp-lab-kundaje-user-amtseng-prj-ap`
 - Populate the bucket with data
-	- Done with script `populate_bucket.sh`
-	- Warning: this takes on the order of 30-60 minutes
+	- Done with script `populate_bucket.sh` (should take around 5 minutes)
 - Once a pod is created through `kubectl` (the `kubectl` that is connected to the cluster), the buckets associated with the project will be visible through `gsutil` automatically
+	- Right after the Docker image is created for the first time, it may take up to 10 minutes for the credentials to be reflected
 
 ### Creating a Docker image
 - The Docker image `kundajelab/genome-pytorch-sacred:gcp` was created (see `..docker/`)
@@ -72,3 +72,41 @@
 - Warning: even with autoscale enabled, there must be at least one node running in the cluster for jobs to be submitted
 	- `gcloud container clusters resize amtseng --num-nodes 1 --node-pool gpu-pool --zone us-west1-a`
 	- Or through the console
+
+### Running training jobs on GCP
+- The Docker image will already create the `/users/amtseng/` directory; this allows easy resharing of configuration files
+- The script `gcp_hyperparam.py` takes in the same arguments as `hyperparam.py`
+	- This script will copy over data from the bucket to the right places, then run `hyperparam.py` with those arguments
+- The `populate_bucket.sh` script must be run to populate the bucket with all training data and source code, including `gcp_hyperparam.py`
+- To run the job, a job command spec might look like this:
+	```
+	apiVersion: batch/v1
+	kind: Job
+	metadata:
+	  name: profile-k562
+	spec:
+	  template:
+	    spec:
+	      containers:
+	      - name: profile-k562
+	        image: kundajelab/genome-pytorch-sacred:gcp
+	        imagePullPolicy: Always
+	        resources:
+	          requests:
+	            memory: 25Gi
+	            cpu: 8
+	            nvidia.com/gpu: 1
+	          limits:
+	            memory: 28Gi
+	            cpu: 8
+	            nvidia.com/gpu: 1
+	        command:
+	        - /bin/bash
+	        - -c
+	        args:
+	        - gsutil cp gs://gbsc-gcp-lab-kundaje-user-amtseng-prj-ap/gcp_hyperparam.py ~;
+	          cd ~;
+	          MODEL_DIR=/users/amtseng/att_priors/models/trained_models/profile_models/K562 python gcp_hyperparam.py -t profile -f /users/amtseng/att_priors/data/processed/ENCODE_DNase/profile/config/K562/K562_training_paths.json -s /users/amtseng/att_priors/data/processed/chrom_splits.json -k 1 -c /users/amtseng/att_priors/data/processed/ENCODE_DNase/profile/config/K562/K562_config.json train.early_stopping=False train.dil_conv_depth=128 train.att_prior_loss_weight=0
+	      restartPolicy: Never
+	  backoffLimit: 0
+	```
