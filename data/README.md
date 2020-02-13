@@ -1,5 +1,6 @@
 ### `raw/`
 Links to `/mnt/lab_data2/amtseng/att_priors/data/raw/`
+- Raw data downloaded directly from its source
 - `ENCODE_TFChIP/`
 	- Contains TF-ChIPseq data fetched from ENCODE
 	- `encode_tf_chip_experiments.tsv`
@@ -33,7 +34,12 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/raw/`
 		- This is because the TF-ChIPseq runs will be valuable for verifying identified motifs using their footprints. This file was created manually
 	- The download was performed by `download_ENCODE_DNase_data.py`
 		- Since these files have already been processed by a pipeline, the data is downloaded into `interim/`, not `raw/`
-	
+
+- `DNase_footprints`
+	- [Paper](https://www.biorxiv.org/content/10.1101/2020.01.31.927798v1.full)
+	- `Vierstra_et_al_2020_Consensus_footprints_0p99.motifs.bed.gz` and `Vierstra_et_al_2020_Footprints_per_sample.0q01.tar.gz` downloaded from [Zenodo](https://zenodo.org/record/3603549) on 2 Feb 2020
+	- `footprints_per_sample/`
+		- Un-tarred footprints per sample from `Vierstra_et_al_2020_Footprints_per_sample.0q01.tar.gz`, subsequently compressed using `gzip`
 
 ### `interim/`
 Links to `/mnt/lab_data2/amtseng/att_priors/data/interim/`
@@ -59,7 +65,7 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/interim/`
 
 ### `processed/`
 Links to `/mnt/lab_data2/amtseng/att_priors/data/processed/`
-- Processed data ready to train models
+- Processed data ready to train models or downstream analysis
 - `chrom_splits.json`
 	- This defines the chromosome splits for hg38, based on chromosome size, for appropriate training, validation, and test sets
 
@@ -98,3 +104,12 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/processed/`
 			- Made from BigWigs in `interim/` using `create_ENCODE_DNase_profile_hdf5.py/`
 		- `config/`
 			- Training configuration files like paths to training data in `labels/`, and parameter configurations like number of tasks
+
+- `DNase_footprints`
+	- Made from combined footprints from multiple samples of the same cell line, then intersected with the consensus motif footprints
+		- `bedtools intersect -a <(zcat footprints_1.bed footprints_2.bed | bedtools sort) -b <(zcat Vierstra_et_al_2020_Consensus_footprints_0p99.motifs.bed.gz | awk '{if ($5 == "") $5 = "."; print $1 "\t" $2 "\t" $3 "\t" $5}') -wa -wb | awk '{print $6 "\t" $7 "\t" $8 "\t" $9 "\t" $1 ":" $2 "-" $3}'
+		- Each resulting BED file has the coordinate of the original consensus motif, with the motif cluster matches in column 4, and the original cell line footprint coordinate in column 5
+	- `HepG2.bed.gz`
+		- Combined from `h.HepG2-DS7764.bed.gz`, `h.HepG2-DS24838.bed.gz`
+	- `K562.bed.gz`
+		- Combined from `h.K562-DS52908.bed.gz`, `K562-DS15363.bed.gz`, `K562-DS16924.bed.gz`

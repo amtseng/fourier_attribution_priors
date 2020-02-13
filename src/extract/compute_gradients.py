@@ -5,7 +5,8 @@ import torch
 import tqdm
 
 def get_input_grads_batch(
-    model, model_type, coords_or_bin_inds, input_func, use_controls=True
+    model, model_type, coords_or_bin_inds, input_func, use_controls=True,
+    return_coords=False
 ):
     """
     Fetches the necessary data from the given coordinates or bin indices and
@@ -24,13 +25,15 @@ def get_input_grads_batch(
             profiles (perhaps with controls)
         `use_controls`: for a profile model, whether or not control tracks are
             used
+        `return_coords`: if True, also return the N x 3 array of coordinates
     Returns an N x I x 4 array of input gradients and an N x I x 4 array of
     input sequences.
     """
     if model_type == "binary":
-        input_seqs_np, _, _ = input_func(coords_or_bin_inds)
+        input_seqs_np, _, coords = input_func(coords_or_bin_inds)
     else:
         input_seqs_np, profiles = input_func(coords_or_bin_inds)
+        coords = coords_or_bin_inds
         profiles = model_util.place_tensor(torch.tensor(profiles)).float()
         if use_controls:
             num_tasks = profiles.shape[1] // 2
@@ -56,13 +59,17 @@ def get_input_grads_batch(
         retain_graph=True, create_graph=True
     )
     input_grads_np = input_grads.detach().cpu().numpy()
-    
-    return input_grads_np, input_seqs_np
+
+    if return_coords:
+        return input_grads_np, input_seqs_np, coords
+    else:
+        return input_grads_np, input_seqs_np
 
 
 def get_input_grads(
     model, model_type, files_spec_path, input_length, reference_fasta,
-    chrom_set=None, profile_length=None, use_controls=True, batch_size=128
+    chrom_set=None, profile_length=None, use_controls=True, return_coords=False,
+    batch_size=128
 ):
     """
     Starting from an imported model, computes input gradients for all specified
@@ -79,6 +86,7 @@ def get_input_grads(
         `use_controls`: for a profile model, whether or not control tracks are
             used
         `batch_size`: batch size for computing the gradients
+        `return_coords`: if True, also return the N x 3 array of coordinates
     For all N positive examples used, returns an N x I x 4 array of the input
     gradients, and an N x I x 4 array of input sequences.
     """
@@ -93,16 +101,24 @@ def get_input_grads(
     num_examples = len(coords_or_bin_inds)
     all_input_grads = np.empty((num_examples, input_length, 4))
     all_input_seqs = np.empty((num_examples, input_length, 4))
+    if return_coords:
+        all_coords = np.empty((num_examples, 3), dtype=object)
     num_batches = int(np.ceil(num_examples / batch_size))
     for i in tqdm.trange(num_batches):
         batch_slice = slice(i * batch_size, (i + 1) * batch_size)
         batch = coords_or_bin_inds[batch_slice]
-        input_grads, input_seqs = get_input_grads_batch(
-            model, model_type, batch, input_func, use_controls=use_controls
+        result = get_input_grads_batch(
+            model, model_type, batch, input_func, use_controls=use_controls,
+            return_coords=return_coords
         )
-        all_input_grads[batch_slice] = input_grads
-        all_input_seqs[batch_slice] = input_seqs
-    return all_input_grads, all_input_seqs
+        all_input_grads[batch_slice] = result[0]
+        all_input_seqs[batch_slice] = result[1]
+        if return_coords:
+            all_coords[batch_slice] = result[2]
+    if return_coords:
+        return all_input_grads, all_input_seqs, all_coords
+    else:
+        return all_input_grads, all_input_seqs
 
 
 if __name__ == "__main__":
