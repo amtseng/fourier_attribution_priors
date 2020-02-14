@@ -54,6 +54,34 @@ def fetch_bigwig_paths(base_path, cell_type):
     return paths
 
 
+def fetch_control_bigwig_paths(control_path):
+    """
+    Reads in a pair of BigWig paths corresponding to DNase-seq bias tracks.
+    These BigWigs should be 5-prime count tracks, and be named like:
+        {stem}_neg.bw {stem}_pos.bw
+    The given path should only have two such files named like this.
+    Arguments:
+        `control_path`: path containing the two BigWig profiles
+    Returns a single pair of paths to BigWig tracks for the negative and
+    positive strands (in that order).
+    """
+    neg_paths = [
+        item for item in os.listdir(control_path) if item.endswith("_neg.bw")
+    ]
+    assert len(neg_paths) == 1
+    neg_path = neg_paths[0]
+    pos_paths = [
+        item for item in os.listdir(control_path) if item.endswith("_pos.bw")
+    ]
+    assert len(pos_paths) == 1
+    pos_path = pos_paths[0]
+    assert pos_path[:-7] == neg_path[:-7]  # Same stem
+    return (
+        os.path.join(control_path, neg_path),
+        os.path.join(control_path, pos_path)
+    )
+
+
 def create_hdf5(
     bigwig_paths, chrom_sizes_path, out_path, chunk_size, batch_size=100
 ):
@@ -122,6 +150,10 @@ def create_hdf5(
     help="Path to directory containing BigWigs; defaults to /users/amtseng/att_priors/data/interim/ENCODE_DNase/profile/{cell_type}/"
 )
 @click.option(
+    "--control-path", "-r", default=None,
+    help="Path to directory containing control BigWigs; defaults to /users/amtseng/att_priors/data/raw/DNase_bias/"
+)
+@click.option(
     "--chrom-sizes-path", "-c",
     default="/users/amtseng/genomes/hg38.canon.chrom.sizes",
     help="Path to canonical chromosome sizes"
@@ -134,16 +166,21 @@ def create_hdf5(
     "--chunk-size", "-s", default=1500,
     help="Chunk size along chromosome length dimension for HDF5"
 )
-def main(cell_type, base_path, chrom_sizes_path, out_path, chunk_size):
+def main(
+    cell_type, base_path, control_path, chrom_sizes_path, out_path, chunk_size
+):
     """
     Converts DNase-seq profile BigWigs into an HDF5 file. The HDF5 has separate
     datasets for each chromosome. Each chromosome's dataset is stored as an
-    L x T x 2 array, where L is the size of the chromosome, T is the number of
-    experiments (i.e. tasks), and 2 is for each strand. The dataset under the
-    key `bigwig_paths` stores the paths for the source BigWigs.
+    L x (T + 1) x 2 array, where L is the size of the chromosome, T is the
+    number of experiments (i.e. tasks), and 2 is for each strand. The last pair
+    of tracks is the control track. The dataset under the key `bigwig_paths`
+    stores the paths for the source BigWigs.
     """
     if not base_path: 
-        base_path = "/users/amtseng/att_priors/data/interim/ENCODE_DNase/profile/%s" % cell_type 
+        base_path = "/users/amtseng/att_priors/data/interim/ENCODE_DNase/profile/%s" % cell_type
+    if not control_path:
+        control_path = "/users/amtseng/att_priors/data/raw/DNase_bias/"
     if not out_path:
         out_path = \
             "/users/amtseng/att_priors/data/processed/ENCODE_DNase/profile/labels/%s/%s_profiles.h5" % (cell_type, cell_type)
@@ -151,7 +188,15 @@ def main(cell_type, base_path, chrom_sizes_path, out_path, chunk_size):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     bigwig_paths = fetch_bigwig_paths(base_path, cell_type)
-    print("Found %d experiments" % len(bigwig_paths))
+    control_bigwig_paths = fetch_control_bigwig_paths(control_path)
+
+    print(bigwig_paths)
+    print(control_bigwig_paths)
+
+    # Tack on the pair of control BigWigs at the end
+    bigwig_paths.append(control_bigwig_paths)
+
+    print("Found %d experiments and 1 control" % len(bigwig_paths))
     create_hdf5(bigwig_paths, chrom_sizes_path, out_path, chunk_size)
 
 
