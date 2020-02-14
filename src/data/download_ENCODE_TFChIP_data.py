@@ -76,6 +76,7 @@ def download_exp_files(exp_file_table, exp_id, save_dir):
 
     exp_table = exp_file_table[exp_file_table["Experiment"] == exp_id]
     cell_line = exp_table["Biosample term name"].values[0]
+    cell_line = cell_line.replace(" ", "-")  # Sanitize
     # For each kind of output type and file format...
     for (out_type, file_type), out_group in exp_table.groupby(
         ["Output type", "File type"]
