@@ -11,7 +11,7 @@ import feature.make_profile_dataset as make_profile_dataset
 
 MODEL_DIR = os.environ.get(
     "MODEL_DIR",
-    "/users/amtseng/att_priors/models/trained_models/profile_models/misc/"
+    "/users/amtseng/att_priors/models/trained_models/profile/misc/"
 )
 
 train_ex = sacred.Experiment("train", ingredients=[
@@ -50,8 +50,10 @@ def config(dataset):
     # Number of prediction tasks (2 outputs for each task: plus/minus strand)
     num_tasks = 4
 
-    # Whether or not to use control profiles in model
-    use_controls = True
+    # Type of control profiles (if any) to use in model; can be "matched" (each
+    # task has a matched control), "shared" (all tasks share a control), or
+    # None (no controls)
+    controls = "matched"
 
     # Amount to weight the counts loss within the correctness loss
     counts_loss_weight = 20
@@ -124,17 +126,19 @@ def config(dataset):
 
 @train_ex.capture
 def create_model(
-    use_controls, input_length, input_depth, profile_length, num_tasks,
+    controls, input_length, input_depth, profile_length, num_tasks,
     num_dil_conv_layers, dil_conv_filter_sizes, dil_conv_stride,
     dil_conv_dilations, dil_conv_depths, prof_conv_kernel_size, prof_conv_stride
 ):
     """
     Creates a profile model using the configuration above.
     """
-    if use_controls:
-        predictor_class = profile_models.ProfilePredictorWithControls
-    else:
+    if controls is None:
         predictor_class = profile_models.ProfilePredictorWithoutControls
+    if controls == "matched":
+        predictor_class = profile_models.ProfilePredictorWithMatchedControls
+    elif controls == "shared":
+        predictor_class = profile_models.ProfilePredictorWithSharedControls
 
     prof_model = predictor_class(
         input_length=input_length,
@@ -221,7 +225,7 @@ def model_loss(
 
 @train_ex.capture
 def run_epoch(
-    data_loader, mode, model, epoch_num, num_tasks, use_controls,
+    data_loader, mode, model, epoch_num, num_tasks, controls,
     att_prior_loss_weight, batch_size, revcomp, input_length, input_depth,
     profile_length, optimizer=None, return_data=False
 ):
@@ -231,10 +235,11 @@ def run_epoch(
     Arguments:
         `data_loader`: an instantiated `DataLoader` instance that gives batches
             of data; each batch must yield the input sequences, profiles,
-            statuses, coordinates, and peaks; if `use_controls` is True,
+            statuses, coordinates, and peaks; if `controls` is "matched",
             profiles must be such that the first half are prediction (target)
-            profiles, and the second half are control profiles; otherwise, all
-            tasks are prediction profiles
+            profiles, and the second half are control profiles; if `controls` is
+            "shared", the last set of profiles is a shared control; otherwise,
+            all tasks are prediction profiles
         `mode`: one of "train", "eval"; if "train", run the epoch and perform
             backpropagation; if "eval", only do evaluation
         `model`: the current PyTorch model being trained/evaluated
@@ -290,9 +295,9 @@ def run_epoch(
         input_seqs = util.place_tensor(torch.tensor(input_seqs)).float()
         profiles = util.place_tensor(torch.tensor(profiles)).float()
 
-        if use_controls:
+        if controls is not None:
             tf_profs = profiles[:, :num_tasks, :, :]
-            cont_profs = profiles[:, num_tasks:, :, :]
+            cont_profs = profiles[:, num_tasks:, :, :]  # Last half or just one
         else:
             tf_profs, cont_profs = profiles, None
 
@@ -307,11 +312,24 @@ def run_epoch(
         if att_prior_loss_weight > 0:
             input_seqs.requires_grad = True  # Set gradient required
             logit_pred_profs, log_pred_counts = model(input_seqs, cont_profs)
-            # Compute the gradients of the output with respect to the input
+
+            # Subtract mean along output profile dimension; this wouldn't change
+            # softmax probabilities, but normalizes the magnitude of gradients
+            norm_logit_pred_profs = logit_pred_profs - \
+                torch.mean(logit_pred_profs, dim=2, keepdims=True)
+
+            # Weight by post-softmax probabilities, but do not take the
+            # gradients of these probabilities; this upweights important regions
+            # exponentially
+            pred_prof_probs = profile_models.profile_logits_to_log_probs(
+                logit_pred_profs
+            ).detach()
+            weighted_norm_logits = norm_logit_pred_profs * pred_prof_probs
+
             input_grads, = torch.autograd.grad(
-                logit_pred_profs, input_seqs,
+                weighted_norm_logits, input_seqs,
                 grad_outputs=util.place_tensor(
-                    torch.ones(logit_pred_profs.size())
+                    torch.ones(weighted_norm_logits.size())
                 ),
                 retain_graph=True, create_graph=True
                 # We'll be operating on the gradient itself, so we need to

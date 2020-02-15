@@ -11,7 +11,7 @@ import feature.make_binary_dataset as make_binary_dataset
 
 MODEL_DIR = os.environ.get(
     "MODEL_DIR",
-    "/users/amtseng/att_priors/models/trained_models/binary_models/misc/"
+    "/users/amtseng/att_priors/models/trained_models/binary/misc/"
 )
 
 train_ex = sacred.Experiment("train", ingredients=[
