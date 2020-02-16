@@ -47,8 +47,11 @@ def config(dataset):
     # Stride for large profile convolution
     prof_conv_stride = 1
 
-    # Number of prediction tasks (2 outputs for each task: plus/minus strand)
+    # Number of prediction tasks
     num_tasks = 4
+
+    # Number of strands; typically 1 (unstranded) or 2 (plus/minus strand)
+    num_strands = 2
 
     # Type of control profiles (if any) to use in model; can be "matched" (each
     # task has a matched control), "shared" (all tasks share a control), or
@@ -126,7 +129,7 @@ def config(dataset):
 
 @train_ex.capture
 def create_model(
-    controls, input_length, input_depth, profile_length, num_tasks,
+    controls, input_length, input_depth, profile_length, num_tasks, num_strands,
     num_dil_conv_layers, dil_conv_filter_sizes, dil_conv_stride,
     dil_conv_dilations, dil_conv_depths, prof_conv_kernel_size, prof_conv_stride
 ):
@@ -145,6 +148,7 @@ def create_model(
         input_depth=input_depth,
         profile_length=profile_length,
         num_tasks=num_tasks,
+        num_strands=num_strands,
         num_dil_conv_layers=num_dil_conv_layers,
         dil_conv_filter_sizes=dil_conv_filter_sizes,
         dil_conv_stride=dil_conv_stride,
@@ -170,12 +174,13 @@ def model_loss(
     Computes the loss for the model.
     Arguments:
         `model`: the model being trained
-        `true_profs`: a B x T x O x 2 tensor, where B is the batch size, T is
-            the number of tasks, and O is the length of the output profiles;
-            this contains true profile read counts (unnormalized)
-        `log_pred_profs`: a B x T x O x 2 tensor, consisting of the output
+        `true_profs`: a B x T x O x S tensor, where B is the batch size, T is
+            the number of tasks, O is the length of the output profiles, and S
+            is the number of strands (1 or 2); this contains true profile read
+            counts (unnormalized)
+        `log_pred_profs`: a B x T x O x S tensor, consisting of the output
             profile predictions as logits
-        `log_pred_counts`: a B x T x 2 tensor consisting of the log counts
+        `log_pred_counts`: a B x T x S tensor consisting of the log counts
             predictions
         `epoch_num`: a 0-indexed integer representing the current epoch
         `input_grads`: a B x I x D tensor, where I is the input length and D is
