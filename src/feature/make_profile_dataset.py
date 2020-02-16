@@ -123,8 +123,8 @@ class CoordsToVals:
     Arguments:
         `hdf5_path`: path to HDF5 containing profiles; this HDF5 must have a
             separate dataset for each chromosome, and it is expected to return
-            profiles of shape L x S x 2, where L is the coordinate dimension,
-            S is the number of profile tracks, and 2 is for each strand
+            profiles of shape O x P x S, where O is the profile size, P is the
+            number of profile tracks, and S is for the strands in each track
         `profile_size`: for each genomic coordinate, center it and pad it on
             both sides to this length to get the final profile; if this is
             smaller than the coordinate interval given, then the interval will
@@ -548,10 +548,12 @@ class CoordDataset(torch.utils.data.IterableDataset):
 
     def get_batch(self, index):
         """
-        Returns a batch, which consists of an B x L x 4 NumPy array of 1-hot
-        encoded sequence, the associated profiles, and a 1D length-B NumPy array
-        of statuses. The profiles will be a B x L x S x 2 array of profiles. The
-        coordinates and peaks may also be returned as a B x 3 array.
+        Returns a batch, which consists of an B x I x 4 NumPy array of 1-hot
+        encoded sequence (I is the length of the input sequence), the associated
+        profiles, and a 1D length-B NumPy array of statuses. The profiles will
+        be a B x P x O x S array of profiles. O is the profile length, P is the
+        number of tracks returned, and S is the number of strands per track (1
+        or 2). Coordinates and peaks may also be returned as a B x 3 array.
         """
         # Get batch of coordinates for this index
         if self.return_coords:
@@ -565,8 +567,8 @@ class CoordDataset(torch.utils.data.IterableDataset):
         # Map this batch of coordinates to the associated values
         profiles = self.coords_to_vals(coords)
 
-        # Profiles are returned as B x L x S x 2, so transpose to get
-        # B x S x L x 2
+        # Profiles are returned as B x O x P x S, so transpose to get
+        # B x P x O x S
         profiles = np.swapaxes(profiles, 1, 2)
 
         # If reverse complementation was done, double sizes of everything else
@@ -574,7 +576,9 @@ class CoordDataset(torch.utils.data.IterableDataset):
             profiles = np.concatenate(
                 # To reverse complement, we must swap the strands AND the
                 # directionality of each strand (i.e. we are assigning the other
-                # strand to be the plus strand, but still 5' to 3')
+                # strand to be the plus strand, but still 5' to 3'). If the
+                # profiles are unstranded, then flipping the last axis will do
+                # nothing
                 [profiles, np.flip(profiles, axis=(2, 3))]
             )
             status = np.concatenate([status, status])
@@ -768,10 +772,9 @@ def main():
     print(peak, rc_peak)
 
     task_ind = 0
+    num_strands = prof.shape[2]
     fig, ax = plt.subplots(2, 1)
-    ax[0].plot(prof[task_ind][:, 0])
-    ax[0].plot(prof[task_ind][:, 1])
-    ax[1].plot(rc_prof[task_ind][:, 0])
-    ax[1].plot(rc_prof[task_ind][:, 1])
-
+    for i in range(num_strands):
+        ax[0].plot(prof[task_ind][:, i])
+        ax[1].plot(rc_prof[task_ind][:, i])
     plt.show()
