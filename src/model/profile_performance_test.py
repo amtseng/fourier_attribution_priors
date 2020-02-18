@@ -316,7 +316,7 @@ class FakeLogger:
 
 
 @test_ex.capture
-def test_all_metrics():
+def test_all_metrics_on_different_predictions():
     np.random.seed(20191110)
     batch_size, num_tasks, prof_len = 50, 2, 1000
 
@@ -352,9 +352,7 @@ def test_all_metrics():
     metrics = profile_performance.compute_performance_metrics(
         true_profs, log_pred_profs, true_counts, log_pred_counts
     )
-    profile_performance.log_performance_metrics(
-        metrics, "Perfect", _run
-    )
+    profile_performance.log_performance_metrics(metrics, "Perfect", _run)
 
     # Make some "good" predicted profiles by adding Gaussian noise to true
     print("Testing all metrics on some good predictions...")
@@ -369,9 +367,7 @@ def test_all_metrics():
     metrics = profile_performance.compute_performance_metrics(
         true_profs, log_pred_profs, true_counts, log_pred_counts
     )
-    profile_performance.log_performance_metrics(
-        metrics, "Good", _run
-    )
+    profile_performance.log_performance_metrics(metrics, "Good", _run)
 
     # Make some "bad" predicted profiles which are just Gaussian noise
     print("Testing all metrics on some bad predictions...")
@@ -384,9 +380,7 @@ def test_all_metrics():
     metrics = profile_performance.compute_performance_metrics(
         true_profs, log_pred_profs, true_counts, log_pred_counts
     )
-    profile_performance.log_performance_metrics(
-        metrics, "Bad", _run
-    )
+    profile_performance.log_performance_metrics(metrics, "Bad", _run)
     print(
         "Warning: note that profile Spearman correlation is not so high, " +\
         "even in the perfect case. This is because while the true profile " +\
@@ -403,4 +397,4 @@ def main():
     test_vectorized_corr_mse_1()
     test_vectorized_corr_mse_2()
     test_vectorized_auprc()
-    test_all_metrics()
+    test_all_metrics_on_different_predictions()

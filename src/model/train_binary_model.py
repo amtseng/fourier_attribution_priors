@@ -458,7 +458,7 @@ def train_model(
     metrics = binary_performance.compute_performance_metrics(
         true_vals, pred_vals, negative_ratio 
     )
-    binary_performance.log_performance_metrics(metrics, _run)
+    binary_performance.log_performance_metrics(metrics, "test", _run)
 
 
 @train_ex.command
