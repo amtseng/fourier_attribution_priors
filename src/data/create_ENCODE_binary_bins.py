@@ -205,7 +205,11 @@ def extract_bin_qvals(
         merged = source_coords_table.merge(
             peaks_tables[i], on=["chrom", "peak_start", "peak_end"], how="left"
         )
-        peak_qvals_ranks[:, i] = merged[["qval", "rank"]].values
+        qval_ranks = merged[["qval", "rank"]].values
+        # Fill in the q-values and ranks, turning anything unmatched into 0;
+        # this is because some coordinates in the source table won't have a
+        # match, as they are coordinates for another task)
+        peak_qvals_ranks[:, i] = np.nan_to_num(qval_ranks, nan=0)
 
     labels_h5_reader.close()
     sources_h5_reader.close()
@@ -312,8 +316,6 @@ def main(
         labels_hdf5, out_labels_hdf5
     )
     np.save(bin_labels_npy, bin_labels_array, allow_pickle=True)
-
-    bin_labels_array = np.load(bin_labels_npy, allow_pickle=True)
 
     # Create/save the peak q-values
     peak_qvals_array = extract_bin_qvals(
