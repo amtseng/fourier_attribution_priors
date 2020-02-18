@@ -54,8 +54,8 @@ def reformat_and_summarize_bin_labels_hdf5(src_labels_hdf5, dest_labels_hdf5):
     chrom_dset = dest_h5_reader.create_dataset(
         "chrom", (num_bins,), dtype=h5py.string_dtype(encoding="ascii")
     )
-    start_dset = dest_h5_reader.create_dataset("start", (num_bins,))
-    end_dset = dest_h5_reader.create_dataset("end", (num_bins,))
+    start_dset = dest_h5_reader.create_dataset("start", (num_bins,), dtype=int)
+    end_dset = dest_h5_reader.create_dataset("end", (num_bins,), dtype=int)
     values_dset = dest_h5_reader.create_dataset("values", (num_bins, num_tasks))
    
     # Allocate bin-level labels, containing all chromosomes and bin-level labels
