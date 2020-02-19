@@ -309,12 +309,11 @@ if __name__ == "__main__":
     model_class = profile_models.ProfilePredictorWithMatchedControls
     model_path = "/users/amtseng/att_priors/models/trained_models/profile/SPI1/1/model_ckpt_epoch_1.pt"
 
-    input_func = data_loading.get_input_func(
-        model_type, files_spec_path, input_length, reference_fasta,
-        profile_length=profile_length
+    input_func = data_loading.get_profile_input_func(
+        files_spec_path, input_length, profile_length, reference_fasta,
     )
-    pos_coords = data_loading.get_positive_inputs(
-        model_type, files_spec_path, chrom_set=chrom_set
+    pos_coords = data_loading.get_positive_profile_coords(
+        files_spec_path, chrom_set=chrom_set
     )
 
     # Import model
@@ -343,11 +342,11 @@ if __name__ == "__main__":
     model_class = binary_models.BinaryPredictor
     model_path = "/users/amtseng/att_priors/models/trained_models/binary/SPI1/1/model_ckpt_epoch_1.pt"
 
-    input_func = data_loading.get_input_func(
-        model_type, files_spec_path, input_length, reference_fasta,
+    input_func = data_loading.get_binary_input_func(
+       files_spec_path, input_length, reference_fasta
     )
-    pos_bins = data_loading.get_positive_inputs(
-        model_type, files_spec_path, chrom_set=chrom_set
+    pos_bins = data_loading.get_positive_binary_bins(
+        files_spec_path, chrom_set=chrom_set
     )
 
     # Import model
