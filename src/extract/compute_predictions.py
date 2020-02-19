@@ -105,7 +105,7 @@ def _get_binary_model_predictions_batch(
         `input_func`: a function that takes in `bins` and returns the B x I x 4
             array of one-hot sequences, the B x T array of output values, and
             B x 3 array of underlying coordinates for the input sequence
-         `return_gradients`: if True, compute/return the input gradients and
+        `return_gradients`: if True, compute/return the input gradients and
             sequences
     Returns the following NumPy arrays: true output values (B x T), predicted
     probabilities (B x T), and underlying sequence coordinates (B x 3 object
@@ -154,8 +154,8 @@ def get_profile_model_predictions(
     batch_size=128, show_progress=False
 ):
     """
-    Fetches the necessary data from the given coordinates or bin indices and
-    runs it through a profile or binary model.
+    Fetches the necessary data from the given coordinates and runs it through a
+    profile model.
     Arguments:
         `model`: a trained `ProfilePredictorWithMatchedControls`,
             `ProfilePredictorWithSharedControls`, or
@@ -237,6 +237,8 @@ def get_binary_model_predictions(
     show_progress=False
 ):
     """
+    Fetches the necessary data from the given bin indices and runs it through a
+    binary model.
     Arguments:
         `model`: a trained `BinaryPredictor`,
         `bins`: an N-array of bin indices to compute outputs for
@@ -299,10 +301,9 @@ if __name__ == "__main__":
     chrom_set = ["chr21"]
 
     print("Testing profile model")
-    model_type = "profile"
     input_length = 1346
     profile_length = 1000
-    controls = "shared"
+    controls = "matched"
     num_tasks = 4
     
     files_spec_path = "/users/amtseng/att_priors/data/processed/ENCODE_TFChIP/profile/config/SPI1/SPI1_training_paths.json"
@@ -316,7 +317,6 @@ if __name__ == "__main__":
         files_spec_path, chrom_set=chrom_set
     )
 
-    # Import model
     print("Loading model...")
     torch.set_grad_enabled(True)
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -324,9 +324,7 @@ if __name__ == "__main__":
     model.eval()
     model = model.to(device)
 
-
     print("Running predictions...")
-    torch.set_grad_enabled(True)
     x = get_profile_model_predictions(
         model, pos_coords, num_tasks, input_func, controls=controls,
         return_gradients=True, show_progress=True
@@ -335,7 +333,6 @@ if __name__ == "__main__":
     print("")
 
     print("Testing binary model")
-    model_type = "binary"
     input_length = 1000
     
     files_spec_path = "/users/amtseng/att_priors/data/processed/ENCODE_TFChIP/binary/config/SPI1/SPI1_training_paths.json"
@@ -349,7 +346,6 @@ if __name__ == "__main__":
         files_spec_path, chrom_set=chrom_set
     )
 
-    # Import model
     print("Loading model...")
     torch.set_grad_enabled(True)
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -358,7 +354,6 @@ if __name__ == "__main__":
     model = model.to(device)
 
     print("Running predictions...")
-    torch.set_grad_enabled(True)
     x = get_binary_model_predictions(
         model, pos_bins, input_func, return_gradients=True, show_progress=True
     )
