@@ -448,7 +448,7 @@ class ProfilePredictorWithMatchedControls(ProfilePredictorWithControls):
         self, input_length, input_depth, profile_length, num_tasks, num_strands,
         num_dil_conv_layers, dil_conv_filter_sizes, dil_conv_stride,
         dil_conv_dilations, dil_conv_depths, prof_conv_kernel_size,
-        prof_conv_stride
+        prof_conv_stride, share_controls=False  # <- for compatibility
     ):
         super().__init__(
             input_length, input_depth, profile_length, num_tasks, num_strands,
@@ -466,7 +466,7 @@ class ProfilePredictorWithSharedControls(ProfilePredictorWithControls):
         self, input_length, input_depth, profile_length, num_tasks, num_strands,
         num_dil_conv_layers, dil_conv_filter_sizes, dil_conv_stride,
         dil_conv_dilations, dil_conv_depths, prof_conv_kernel_size,
-        prof_conv_stride
+        prof_conv_stride, share_controls=True  # <- for compatibility
     ):
         super().__init__(
             input_length, input_depth, profile_length, num_tasks, num_strands,

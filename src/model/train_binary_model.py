@@ -233,9 +233,11 @@ def run_epoch(
         `epoch_num`: 0-indexed integer representing the current epoch
         `optimizer`: an instantiated PyTorch optimizer, for training mode
         `return_data`: if specified, returns the following as NumPy arrays:
-            true binding values (0, 1, or -1), predicted binding probabilities,
-            input sequences, input gradients (if the attribution prior loss is
-            not used, these will all be garbage), and coordinates used
+            true binding values (0, 1, or -1) (N x T), predicted binding
+            probabilities (N x T), the underlying sequence coordinates (N x 3
+            object array), input gradients (N x I x 4), and the input sequences
+            (N x I x 4); if the attribution prior is not used, the gradients
+            will be garbage
     Returns lists of overall losses, correctness losses, and attribution prior
     losses, where each list is over all batches. If the attribution prior loss
     is not computed, then it will be all 0s. If `return_data` is True, then more
@@ -297,7 +299,7 @@ def run_epoch(
                 retain_graph=True, create_graph=True
                 # We'll be operating on the gradient itself, so we need to
                 # create the graph
-                # Gradients are summed across strands and tasks
+                # Gradients are summed across tasks
             )
             if return_data:
                 input_grads_np = input_grads.detach().cpu().numpy()
@@ -351,7 +353,7 @@ def run_epoch(
         all_input_grads = all_input_grads[:num_samples_seen]
         all_coords = all_coords[:num_samples_seen]
         return batch_losses, corr_losses, att_losses, all_true_vals, \
-            all_pred_vals, all_input_seqs, all_input_grads, all_coords
+            all_pred_vals, all_coords, all_input_grads, all_input_seqs
     else:
         return batch_losses, corr_losses, att_losses
 
@@ -446,8 +448,8 @@ def train_model(
 
     # Compute evaluation metrics and log them
     print("Computing test metrics:")
-    batch_losses, corr_losses, att_losses, true_vals, pred_vals, input_seqs, \
-        input_grads, coords = run_epoch(
+    batch_losses, corr_losses, att_losses, true_vals, pred_vals, coords, \
+        input_grads, input_seqs = run_epoch(
             test_loader, "eval", model, 0, return_data=True
             # Don't use attribution prior loss when computing final loss
     )
