@@ -501,7 +501,7 @@ def train_model(
 
         # Check for early stopping
         if early_stopping:
-            if len(val_epoch_loss_hist) < early_stop_hist_len - 1:
+            if len(val_epoch_loss_hist) < early_stop_hist_len + 1:
                 # Not enough history yet; tack on the loss
                 val_epoch_loss_hist = [val_epoch_loss] + val_epoch_loss_hist
             else:
