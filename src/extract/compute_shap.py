@@ -509,8 +509,7 @@ if __name__ == "__main__":
     
     print("Creating explainer...")
     explainer = create_profile_explainer(
-        model, input_length, profile_length, num_tasks, num_strands, controls,
-        task_index=None, bg_size=10
+        model, input_length, profile_length, num_tasks, num_strands, controls
     )
     print("Computing importance scores...")
     input_seqs, profiles = input_func(pos_coords[:10])
@@ -543,9 +542,8 @@ if __name__ == "__main__":
     model = model.to(device)
     
     print("Creating explainer...")
-    explainer = create_binary_explainer(
-        model, input_length, num_tasks, task_index=None, bg_size=10
-    )
+    explainer = create_binary_explainer(model, input_length, num_tasks)
+
     print("Computing importance scores...")
     input_seqs, output_vals, coords = input_func(pos_bins[:10])
     hyp_scores = explainer(input_seqs, hide_shap_output=True)

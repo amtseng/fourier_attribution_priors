@@ -54,7 +54,7 @@ def _get_profile_model_predictions_batch(
         # Subtract mean along output profile dimension; this wouldn't change
         # softmax probabilities, but normalizes the magnitude of gradients
         norm_logit_pred_profs = logit_pred_profs - \
-            torch.mean(logit_pred_profs, dim=2, keepdims=True)
+            torch.mean(logit_pred_profs, dim=2, keepdim=True)
 
         # Weight by post-softmax probabilities, but do not take the
         # gradients of these probabilities; this upweights important regions
