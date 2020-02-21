@@ -1,4 +1,4 @@
-### Description of files
+### Description of setup and files
 
 ### Setting up GCP
 - Installing `gcloud` and `gsutil`
@@ -12,22 +12,15 @@
 - Install the GCP version of kube
 	- `gcloud components install kubectl`
 	- Verify using `which kubectl` is the GCP version, if another `kubectl` may exist on the system
-- Install `gcsfuse`
-	- Requires `sudo`
-	- Technically, `gcsfuse` is not strictly necessary to move data in/out of a bucket, but it is useful for mounting the bucket for easier access (instead of using `gsutil cp`)
-- Get service account key for mounting buckets with `gcsfuse`
-	- Go [here](https://console.cloud.google.com/iam-admin/serviceaccounts?project=gbsc-gcp-lab-kundaje)
-	- The `gcsfuse3` service account has been created with the proper premissions to work with GCSFuse to mount buckets for the project
-	- Created JSON key and downloaded it
 - Create Kubernetes cluster on GCP
 	- Done through GUI online, created cluster `amtseng`
 	- Some specifications selected (outside of defaults):
 		- Zone: us-west1-a (us-central is default, but this can be slow)
 		- GPU pool:
 			- Autoscale nodes, [0, 16]
-			- n1-standard-8 (i.e. 8 CPUs, 30 GB RAM) per node
+			- n1-standard-4 (i.e. 4 CPUs, 15 GB RAM) per node
 			- 1 Tesla P100 per node
-			- 28 GB boot disk per node
+			- 32 GB boot disk per node
 			- Storage permissions: read/write
 - Connect `kubectl` to the cluster
 	- `gcloud container clusters get-credentials amtseng --zone us-west1-a`
@@ -43,15 +36,26 @@
 	- Regional, with _same region as cluster_, `us-west1` (otherwise the bucket is not accessible to the cluster)
 	- Used uniform access control (i.e. same across entire bucket)
 	- Default permissions is read/write within the project (i.e. within `gbsc-gcp-lab-kundaje`)
+- Populate the bucket with data
+	- Done with script `populate_bucket.sh` (should take around 5 minutes)
+- Once a pod is created through `kubectl` (the `kubectl` that is connected to the cluster), the buckets associated with the project will be visible through `gsutil` automatically
+	- Right after the Docker image is created for the first time, it may take up to 10 minutes for the credentials to be reflected
+
+### Mounting a bucket
+- Technically, mounting a bucket is not necessary to move data in/out of a bucket, but it can be useful for moving around and navigating it (instead of using `gsutil`)
+	- `gsutil`, however, seems to be faster
+- Install `gcsfuse`
+	- Requires `sudo`
+	- Technically, `gcsfuse` is not strictly necessary to move data in/out of a bucket, but it is useful for mounting the bucket for easier access (instead of using `gsutil cp`)
+- Get service account key for mounting buckets with `gcsfuse`
+	- Go [here](https://console.cloud.google.com/iam-admin/serviceaccounts?project=gbsc-gcp-lab-kundaje)
+	- The `gcsfuse3` service account has been created with the proper premissions to work with GCSFuse to mount buckets for the project
+	- Created JSON key and downloaded it
 - Mount the bucket and copy data into the bucket
 	- `gcsfuse --key-file /users/amtseng/gbsc-gcp-lab-kundaje-be8de736710b.json --implicit-dirs -o allow_other gbsc-gcp-lab-kundaje-user-amtseng-prj-ap ~/mounts/gbsc-gcp-lab-kundaje-user-amtseng-prj-ap`
 		- Note the `gs://` prefix is not specified to `gcsfuse`
 		- The full path to the keyfile must be specified
 	- To unmount, `fusermount -u ~/mounts/gbsc-gcp-lab-kundaje-user-amtseng-prj-ap`
-- Populate the bucket with data
-	- Done with script `populate_bucket.sh` (should take around 5 minutes)
-- Once a pod is created through `kubectl` (the `kubectl` that is connected to the cluster), the buckets associated with the project will be visible through `gsutil` automatically
-	- Right after the Docker image is created for the first time, it may take up to 10 minutes for the credentials to be reflected
 
 ### Creating a Docker image
 - The Docker image `kundajelab/genome-pytorch-sacred:gcp` was created (see `..docker/`)

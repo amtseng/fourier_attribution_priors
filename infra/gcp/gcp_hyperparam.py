@@ -57,7 +57,8 @@ def copy_data(
         file_specs_json = json.load(f)
     if model_type == "binary":
         file_paths = [
-            file_specs_json["labels_hdf5"], file_specs_json["bin_labels_npy"]
+            file_specs_json["labels_hdf5"], file_specs_json["bin_labels_npy"],
+            file_specs_json["peak_qvals_npy"]
         ]
     else:
         file_paths = file_specs_json["peak_beds"]
@@ -126,23 +127,39 @@ def main(
     comm += ["-f", file_specs_json_path]
     comm += ["-s", chrom_split_json_path]
     comm += ["-k", chrom_split_key]
-    comm += ["-n", str(num_runs)]
+    comm += ["-n", "1"]  # Each time, only run once
     if hyperparam_json_path:
         comm += ["-p", hyperparam_json_path]
     if config_json_path:
         comm += ["-c", config_json_path]
     comm += config_cli_tokens
     env = os.environ.copy()
-    proc = subprocess.Popen(comm, env=env, stderr=subprocess.STDOUT)
-    proc.wait()
-
-    print("Copying training results into bucket...")
+    
     model_path = "/users/amtseng/att_priors/models/"
-    bucket_path = os.path.join(BUCKET_URL, model_path[1:])  # Append without "/"
-    proc = subprocess.Popen([
-        "gsutil", "cp", "-r", model_path + "*", bucket_path
-    ])
-    proc.wait()
+
+    for i in range(num_runs):
+        print("Beginning run %d" % i)
+
+        proc = subprocess.Popen(comm, env=env, stderr=subprocess.STDOUT)
+        proc.wait()
+
+        # The largest run number is the one just completed
+        run_nums = []
+        for dirname in os.listdir(model_path):
+            try:
+                run_nums.append(int(dirname))
+            except ValueError:
+                pass
+        run_num = max(run_nums) if run_nums else 1
+
+        print("Copying training results from run %d into bucket..." % i)
+        run_path = os.path.join(model_path, str(run_num))
+        bucket_path = os.path.join(BUCKET_URL, model_path[1:])
+        proc = subprocess.Popen([
+            "gsutil", "cp", "-r", run_path, bucket_path
+        ])
+        proc.wait()
+
     print("Done!")
 
 if __name__ == "__main__":
