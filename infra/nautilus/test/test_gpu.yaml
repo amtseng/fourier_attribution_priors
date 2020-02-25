@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-gpu
+spec:
+  template:
+    spec:
+      containers:
+      - name: test-gpu
+        image: kundajelab/genome-pytorch-sacred:nautilus
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 4
+            memory: 16Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 8
+            memory: 32Gi
+            nvidia.com/gpu: 1
+        command:
+        - /bin/bash
+        - -c
+        args:
+        - echo "Beginning test-gpu";
+          cp /ceph/test/test_gpu.sh ~;
+          bash ~/test_gpu.sh;
+        volumeMounts:
+        - mountPath: /ceph
+          name: ceph
+      restartPolicy: Never
+      volumes:
+        - name: ceph
+          flexVolume:
+            driver: ceph.rook.io/rook
+            fsType: ceph
+            options:
+              clusterNamespace: rook
+              fsname: nautilusfs
+              path: /amtseng
+              mountUser: amtseng
+              mountSecret: ceph-fs-secret
+  backoffLimit: 0

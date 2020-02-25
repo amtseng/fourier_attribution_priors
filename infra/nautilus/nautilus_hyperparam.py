@@ -1,32 +1,31 @@
 import click
 import os
 import subprocess
+import shutil
 import json
+import sys
 
-BUCKET_URL = "gs://gbsc-gcp-lab-kundaje-user-amtseng-prj-ap"
+CEPH_MOUNT = "/ceph"
 
 def copy_item(path, directory=False):
     """
-    Copies an item at the given path from the bucket to its final destination.
+    Copies an item at the given path from the Ceph to its final destination.
     The path given should be the path to copy to, beginning with
-    `/users/amtseng/`. This item should exist in the bucket, at the exact same
-    path (also starting with `/users/amtseng/`). If `directory` is True, the
-    item at the path is assumed to be a directory.
+    `/users/amtseng/`. This item should exist in Ceph, at the exact same path
+    (starting with `/ceph/users/amtseng/`). If `directory` is True, the item
+    at the path is assumed to be a directory.
     """
     stem = "/users/amtseng/"
     path = os.path.normpath(path)  # Normalize
     assert path.startswith(stem)
-    bucket_path = os.path.join(BUCKET_URL, path[1:])  # Append without "/"
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    ceph_path = os.path.join(CEPH_MOUNT, path[1:])  # Append without "/"
     if directory:
-        proc = subprocess.Popen([
-            "gsutil", "cp", "-r", bucket_path, os.path.dirname(path)
-        ])
+        # shutil.copytree will create the destination directory
+        shutil.copytree(ceph_path, path)
     else:
-        proc = subprocess.Popen([
-            "gsutil", "cp", bucket_path, os.path.dirname(path)
-        ])
-    proc.wait()
+        # shutil.copy requires the directory to exist
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.copy(ceph_path, os.path.dirname(path))
 
 
 def copy_data(
@@ -41,6 +40,7 @@ def copy_data(
     This will also copy genomic references and source code.
     """
     print("Copying configuration/specification JSONs...")
+    sys.stdout.flush()
     # Copy the jsons
     for json_path in [
         file_specs_json_path, chrom_split_json_path, hyperparam_json_path,
@@ -51,6 +51,7 @@ def copy_data(
             copy_item(json_path)
 
     print("Copying data...")
+    sys.stdout.flush()
     # Within the file specs, copy all paths in the file specs; this JSON should
     # be in the right place now
     with open(file_specs_json_path) as f:
@@ -67,10 +68,12 @@ def copy_data(
         copy_item(file_path)
 
     print("Copying genomic references...")
+    sys.stdout.flush()
     # Copy the genomic references
     copy_item("/users/amtseng/genomes/", directory=True)
         
     print("Copying source code...")
+    sys.stdout.flush()
     copy_item("/users/amtseng/att_priors/src/", directory=True)
 
 
@@ -135,10 +138,11 @@ def main(
     comm += config_cli_tokens
     env = os.environ.copy()
     
-    model_path = "/users/amtseng/att_priors/models/"
+    model_path = env["MODEL_DIR"]
 
     for i in range(num_runs):
         print("Beginning run %d" % (i + 1))
+        sys.stdout.flush()
 
         proc = subprocess.Popen(comm, env=env, stderr=subprocess.STDOUT)
         proc.wait()
@@ -152,13 +156,12 @@ def main(
                 pass
         run_num = max(run_nums) if run_nums else 1
 
-        print("Copying training results from run %d into bucket..." % (i + 1))
+        print("Copying training results from run %d into Ceph..." % (i + 1))
+        sys.stdout.flush()
         run_path = os.path.join(model_path, str(run_num))
-        bucket_path = os.path.join(BUCKET_URL, model_path[1:])
-        proc = subprocess.Popen([
-            "gsutil", "cp", "-r", run_path, bucket_path
-        ])
-        proc.wait()
+        ceph_path = os.path.join(CEPH_MOUNT, model_path[1:], str(run_num))
+        sys.stdout.flush()
+        shutil.copytree(run_path, ceph_path)
 
     print("Done!")
 
