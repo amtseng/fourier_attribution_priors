@@ -84,7 +84,7 @@ def config(dataset):
     att_prior_grad_smooth_sigma = 3
 
     # Maximum frequency integer to consider for a Fourier attribution prior
-    fourier_att_prior_freq_limit = 200
+    fourier_att_prior_freq_limit = 150
 
     # Amount to soften the Fourier attribution prior loss limit; set to None
     # to not soften; softness decays like 1 / (1 + x^c) after the limit
