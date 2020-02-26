@@ -91,7 +91,7 @@ def config(dataset):
     fourier_att_prior_freq_limit_softness = 0.2
 
     # Number of training epochs
-    num_epochs = 10
+    num_epochs = 20
 
     # Learning rate
     learning_rate = 0.001
