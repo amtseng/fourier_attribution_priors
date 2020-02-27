@@ -251,7 +251,7 @@ def extract_bin_signals(
     help="Output path for bin labels NumPy array; defaults to /users/amtseng/att_priors/data/processed/ENCODE_{assay}/binary/labels/{cell_line_or_tf}/{cell_line_or_tf}_bin_labels.npy"
 )
 @click.option(
-    "--peak-signals-npy", "-g", default=None,
+    "--peak-signals-npy", "-p", default=None,
     help="Output path for bin-level signal NumPy array; defaults to /users/amtseng/att_priors/data/processed/ENCODE_{assay}/binary/labels/{cell_line_or_tf}/{cell_line_or_tf}_peak_signals.npy"
 )
 @click.option(

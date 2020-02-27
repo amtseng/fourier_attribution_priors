@@ -20,3 +20,6 @@ echo "Copying genomic references..."
 gsutil cp $localstem/genomes/hg38.canon.chrom.sizes $bucketstem/genomes/hg38.canon.chrom.sizes
 gsutil cp $localstem/genomes/hg38.fasta $bucketstem/genomes/hg38.fasta
 gsutil cp $localstem/genomes/hg38.fasta.fai $bucketstem/genomes/hg38.fasta.fai
+gsutil cp $localstem/genomes/mm10.canon.chrom.sizes $bucketstem/genomes/mm10.canon.chrom.sizes
+gsutil cp $localstem/genomes/mm10.fasta $bucketstem/genomes/mm10.fasta
+gsutil cp $localstem/genomes/mm10.fasta.fai $bucketstem/genomes/mm10.fasta.fai

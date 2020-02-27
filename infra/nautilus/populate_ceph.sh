@@ -33,3 +33,6 @@ kubectl exec $podname -- mkdir -p $ceph/$stem/genomes
 kubectl cp $stem/genomes/hg38.canon.chrom.sizes $podname:$ceph/$stem/genomes
 kubectl cp $stem/genomes/hg38.fasta $podname:$ceph/$stem/genomes
 kubectl cp $stem/genomes/hg38.fasta.fai $podname:$ceph/$stem/genomes
+kubectl cp $stem/genomes/mm10.canon.chrom.sizes $podname:$ceph/$stem/genomes
+kubectl cp $stem/genomes/mm10.fasta $podname:$ceph/$stem/genomes
+kubectl cp $stem/genomes/mm10.fasta.fai $podname:$ceph/$stem/genomes
