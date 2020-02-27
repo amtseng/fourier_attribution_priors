@@ -300,7 +300,7 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         if peak_retention is not None:
             # Keep only a subset of the peaks in the table
             # Sort coordinates by confidence first
-            peaks_table = peaks_table.sort_values(by="qval", ascending=False)
+            peaks_table = peaks_table.sort_values(by="signal", ascending=False)
             # Drop duplicate coordinates, keeping high-confidence peaks for ties
             peaks_table = peaks_table.drop_duplicates(
                 subset=["chrom", "peak_start", "peak_end"], keep="first"
