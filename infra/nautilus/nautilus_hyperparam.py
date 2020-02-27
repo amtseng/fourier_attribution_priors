@@ -138,7 +138,7 @@ def main(
     comm += config_cli_tokens
     env = os.environ.copy()
     
-    model_path = env["MODEL_DIR"]
+    local_model_path = env["MODEL_DIR"]
 
     for i in range(num_runs):
         print("Beginning run %d" % (i + 1))
@@ -147,21 +147,24 @@ def main(
         proc = subprocess.Popen(comm, env=env, stderr=subprocess.STDOUT)
         proc.wait()
 
-        # The largest run number is the one just completed
-        run_nums = []
-        for dirname in os.listdir(model_path):
-            try:
-                run_nums.append(int(dirname))
-            except ValueError:
-                pass
-        run_num = max(run_nums) if run_nums else 1
-
+        local_run_num = i + 1  # This was the run just created locally
+        
+        # Now get the maximum run num on Ceph
+        ceph_model_path = os.path.join(CEPH_MOUNT, local_model_path[1:])
+        ceph_run_nums = []
+        if os.path.isdir(ceph_model_path):  # It may not exist
+            for dirname in os.listdir(ceph_model_path):
+                try:
+                    ceph_run_nums.append(int(dirname))
+                except ValueError:
+                    pass
+        ceph_run_num = max(ceph_run_nums) + 1 if ceph_run_nums else 1
+        
         print("Copying training results from run %d into Ceph..." % (i + 1))
         sys.stdout.flush()
-        run_path = os.path.join(model_path, str(run_num))
-        ceph_path = os.path.join(CEPH_MOUNT, model_path[1:], str(run_num))
-        sys.stdout.flush()
-        shutil.copytree(run_path, ceph_path)
+        local_run_path = os.path.join(local_model_path, str(local_run_num))
+        ceph_run_path = os.path.join(ceph_model_path, str(ceph_run_num))
+        shutil.copytree(local_run_path, ceph_run_path)
 
     print("Done!")
 
