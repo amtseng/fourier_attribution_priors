@@ -59,7 +59,7 @@ def copy_data(
     if model_type == "binary":
         file_paths = [
             file_specs_json["labels_hdf5"], file_specs_json["bin_labels_npy"],
-            file_specs_json["peak_qvals_npy"]
+            file_specs_json["peak_signals_npy"]
         ]
     else:
         file_paths = file_specs_json["peak_beds"]
