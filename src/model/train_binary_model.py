@@ -477,13 +477,13 @@ def run_training(
     )
     val_loader = make_binary_dataset.create_data_loader(
         labels_hdf5, bin_labels_array, return_coords=True,
-        chrom_set=val_chroms, peak_signals_npy_or_array=peak_signals_array
-
+        chrom_set=val_chroms, peak_signals_npy_or_array=peak_signals_array,
+        peak_retention=None  # Use the whole validation set
     )
     test_loader = make_binary_dataset.create_data_loader(
         labels_hdf5, bin_labels_array, return_coords=True,
-        chrom_set=test_chroms, peak_signals_npy_or_array=peak_signals_array
-
+        chrom_set=test_chroms, peak_signals_npy_or_array=peak_signals_array,
+        peak_retention=None  # Use the whole test set
     )
     train_model(train_loader, val_loader, test_loader)
 
