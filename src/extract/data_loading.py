@@ -4,6 +4,7 @@ import feature.make_binary_dataset as make_binary_dataset
 import pandas as pd
 import numpy as np
 import json
+import h5py
 
 def get_profile_input_func(
     files_spec_path, input_length, profile_length, reference_fasta
@@ -74,12 +75,14 @@ def get_binary_input_func(files_spec_path, input_length, reference_fasta):
     return input_func
 
 
-def get_positive_profile_coords(files_spec_path, chrom_set=None):
+def get_positive_profile_coords(files_spec_path, task_ind=None, chrom_set=None):
     """
     Gets the set of positive coordinates for a profile model from the files
     specs. The coordinates consist of peaks collated over all tasks.
     Arguments:
         `files_spec_path`: path to the JSON files spec for the model
+        `task_ind`: if specified, loads only the coordinates for the task with
+            this index (0-indexed); by default loads for all tasks
         `chrom_set`: if given, limit the set of coordinates to these chromosomes
             only
     Returns an N x 3 array of coordinates.
@@ -88,6 +91,8 @@ def get_positive_profile_coords(files_spec_path, chrom_set=None):
         files_spec = json.load(f)
 
     peaks = []
+    peaks_beds = files_spec["peak_beds"][task_ind] if task_ind is not None \
+        else files_spec["peak_beds"]
     for peaks_bed in files_spec["peak_beds"]:
         table = pd.read_csv(peaks_bed, sep="\t", header=None)
         if chrom_set is not None:
@@ -96,12 +101,14 @@ def get_positive_profile_coords(files_spec_path, chrom_set=None):
     return np.concatenate(peaks)       
 
 
-def get_positive_binary_bins(files_spec_path, chrom_set=None):
+def get_positive_binary_bins(files_spec_path, task_ind=None, chrom_set=None):
     """
     Gets the set of positive bin indices from the files specs. This is all
     bins that contain at least one task which is positive in that bin.
     Arguments:
         `files_spec_path`: path to the JSON files spec for the model
+        `task_ind`: if specified, loads only the coordinates for the task with
+            this index (0-indexed); by default loads for all tasks
         `chrom_set`: if given, limit the set bin indices to these chromosomes
             only
     Returns an N-array of bin indices.
@@ -109,9 +116,19 @@ def get_positive_binary_bins(files_spec_path, chrom_set=None):
     with open(files_spec_path, "r") as f:
         files_spec = json.load(f)
 
-    labels_array = np.load(files_spec["bin_labels_npy"], allow_pickle=True)
-    mask = labels_array[:, 1] == 1
-    if chrom_set is not None:
-        chrom_mask = np.isin(labels_array[:, 0], np.array(chrom_set))
-        mask = chrom_mask & mask
-    return np.where(mask)[0]
+    if task_ind is None:
+        # Load from the set of bin-level labels
+        labels_array = np.load(files_spec["bin_labels_npy"], allow_pickle=True)
+        mask = labels_array[:, 1] == 1
+        if chrom_set is not None:
+            chrom_mask = np.isin(labels_array[:, 0], np.array(chrom_set))
+            mask = chrom_mask & mask
+        return np.where(mask)[0]
+    else:
+        # Load from the full HDF5
+        with h5py.File(files_spec["labels_hdf5"], "r") as f:
+            chroms = f["chrom"][:]
+            vals = f["values"][:, task_ind]
+            chrom_mask = np.isin(chroms, np.array(chrom_set).astype(bytes))
+            pos_mask = vals == 1
+        return np.where(chrom_mask & pos_mask)[0]
