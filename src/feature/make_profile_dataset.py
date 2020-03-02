@@ -348,8 +348,8 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         If `return_peaks` was specified at object creation-time, also return a
         B x 3 2D NumPy array containing the peak information for the original
         peaks, consisting of the peak boundaries and the summit location
-        (respectively); for negative samples drawn from the GenomeSampler, these
-        values are all -1.
+        (respectively); for negative samples drawn from the
+        GenomeIntervalSampler, these values are all -1.
         """
         pos_table = self.all_pos_table[
             index * self.pos_per_batch : (index + 1) * self.pos_per_batch

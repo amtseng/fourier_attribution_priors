@@ -38,6 +38,9 @@ def config():
 
     # Number of workers for the data loader
     num_workers = 10
+    
+    # Negative seed (for selecting negatives)
+    negative_seed = None
 
     # Shuffle seed (for shuffling data points)
     shuffle_seed = None
@@ -107,12 +110,13 @@ class SamplingBinsBatcher(torch.utils.data.sampler.Sampler):
             signal strength) of each peak in each bin
         `shuffle_before_epoch`: whether or not to shuffle all examples before
             each epoch
+        `negative_seed`: seed for picking negatives
         `shuffle_seed`: seed for shuffling
     """
     def __init__(
         self, bin_labels_array, batch_size, neg_ratio, chroms_keep=None,
-        peak_retention=None, peak_signals_array=None, shuffle_before_epoch=False,
-        shuffle_seed=None
+        peak_retention=None, peak_signals_array=None,
+        shuffle_before_epoch=False, negative_seed=None, shuffle_seed=None
     ):
         self.batch_size = batch_size
         self.shuffle_before_epoch = shuffle_before_epoch
@@ -148,6 +152,7 @@ class SamplingBinsBatcher(torch.utils.data.sampler.Sampler):
         self.neg_per_batch = int(batch_size * neg_ratio / (neg_ratio + 1))
         self.pos_per_batch = batch_size - self.neg_per_batch
 
+        self.negative_rng = np.random.RandomState(negative_seed)
         if shuffle_before_epoch:
             self.shuffle_rng = np.random.RandomState(shuffle_seed)
 
@@ -177,7 +182,7 @@ class SamplingBinsBatcher(torch.utils.data.sampler.Sampler):
     def on_epoch_start(self):
         if (self.shuffle_before_epoch):
             self.shuffle_rng.shuffle(self.pos_inds)
-            self.shuffle_rng.shuffle(self.neg_inds)
+        self.negative_rng.shuffle(self.neg_inds)  # Always shuffle negatives
 
 
 class BinDataset(torch.utils.data.IterableDataset):
@@ -265,8 +270,8 @@ class BinDataset(torch.utils.data.IterableDataset):
 def create_data_loader(
     labels_hdf5_path, bin_labels_npy_or_array, batch_size, reference_fasta,
     input_length, negative_ratio, peak_retention, num_workers, revcomp,
-    shuffle_seed, peak_signals_npy_or_array=None, chrom_set=None, shuffle=True,
-    return_coords=False
+    negative_seed, shuffle_seed, peak_signals_npy_or_array=None, chrom_set=None,
+    shuffle=True, return_coords=False
 ):
     """
     Creates an IterableDataset object, which iterates through batches of
