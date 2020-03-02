@@ -15,8 +15,8 @@ import os
 
 def make_shap_scores(
     model_path, model_type, files_spec_path, input_length, num_tasks, out_path,
-    reference_fasta, chrom_sizes, profile_length=1000, controls=None,
-    num_strands=2, chrom_set=None, batch_size=128, seed=None
+    reference_fasta, chrom_sizes, task_index=None, profile_length=1000,
+    controls=None, num_strands=2, chrom_set=None, batch_size=128, seed=None
 ):
     """
     Computes SHAP scores over an entire dataset, and saves them as an HDF5 file.
@@ -31,6 +31,8 @@ def make_shap_scores(
         `out_path`: path to HDF5 to save SHAP scores and input sequences
         `reference_fasta`: path to reference FASTA
         `chrom_sizes`: path to chromosome sizes TSV
+        `task_index`: index of task to explain; if None, explain all tasks in
+            aggregate
         `profile_length`: for profile models, the length of output profiles
         `controls`: for profile models, the kind of controls used: "matched",
             "shared", or None; this also determines the class of the model
@@ -95,12 +97,12 @@ def make_shap_scores(
     # Create the explainer
     if model_type == "binary":
         explainer = compute_shap.create_binary_explainer(
-            model, input_length, num_tasks
+            model, input_length, num_tasks, task_index=task_index
         )
     else:
         explainer = compute_shap.create_profile_explainer(
             model, input_length, profile_length, num_tasks, num_strands,
-            controls
+            controls, task_index=task_index
         )
 
     # Compute the importance scores
@@ -147,6 +149,10 @@ def make_shap_scores(
     "--num-tasks", "-n", required=True, help="Number of tasks in model"
 )
 @click.option(
+    "--task-index", "-i", default=None, type=int,
+    help="Index of task to explain; defaults to all in aggregate"
+)
+@click.option(
     "--out-path", "-o", required=True, help="Path to output HDF5"
 )
 @click.option(
@@ -182,9 +188,9 @@ def make_shap_scores(
 )
 @click.option("--seed", default=None, help="Seed for negative sampling")
 def main(
-    model_path, model_type, files_spec_path, num_tasks, out_path, chrom_set,
-    input_length, reference_fasta, chrom_sizes, profile_length, controls,
-    num_strands, batch_size, seed
+    model_path, model_type, files_spec_path, num_tasks, task_index, out_path,
+    chrom_set, input_length, reference_fasta, chrom_sizes, profile_length,
+    controls, num_strands, batch_size, seed
 ):
     if not input_length:
         if model_type == "binary":
@@ -197,8 +203,8 @@ def main(
     
     make_shap_scores(
         model_path, model_type, files_spec_path, input_length, num_tasks,
-        out_path, reference_fasta, chrom_sizes, profile_length, controls,
-        num_strands, chrom_set, batch_size, seed
+        out_path, reference_fasta, chrom_sizes, task_index, profile_length,
+        controls, num_strands, chrom_set, batch_size, seed
     )
 
 if __name__ == "__main__":
