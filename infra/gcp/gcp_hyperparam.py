@@ -2,6 +2,7 @@ import click
 import os
 import subprocess
 import json
+import sys
 
 BUCKET_URL = "gs://gbsc-gcp-lab-kundaje-user-amtseng-prj-ap"
 
@@ -41,6 +42,7 @@ def copy_data(
     This will also copy genomic references and source code.
     """
     print("Copying configuration/specification JSONs...")
+    sys.stdout.flush()
     # Copy the jsons
     for json_path in [
         file_specs_json_path, chrom_split_json_path, hyperparam_json_path,
@@ -51,6 +53,7 @@ def copy_data(
             copy_item(json_path)
 
     print("Copying data...")
+    sys.stdout.flush()
     # Within the file specs, copy all paths in the file specs; this JSON should
     # be in the right place now
     with open(file_specs_json_path) as f:
@@ -67,10 +70,12 @@ def copy_data(
         copy_item(file_path)
 
     print("Copying genomic references...")
+    sys.stdout.flush()
     # Copy the genomic references
     copy_item("/users/amtseng/genomes/", directory=True)
         
     print("Copying source code...")
+    sys.stdout.flush()
     copy_item("/users/amtseng/att_priors/src/", directory=True)
 
 
@@ -135,28 +140,43 @@ def main(
     comm += config_cli_tokens
     env = os.environ.copy()
     
-    model_path = "/users/amtseng/att_priors/models/"
+    local_model_path = env["MODEL_DIR"]
 
     for i in range(num_runs):
         print("Beginning run %d" % (i + 1))
+        sys.stdout.flush()
 
         proc = subprocess.Popen(comm, env=env, stderr=subprocess.STDOUT)
         proc.wait()
 
-        # The largest run number is the one just completed
-        run_nums = []
-        for dirname in os.listdir(model_path):
+        local_run_num = i + 1  # This was the run just created locally
+
+        # Now get the maximum run num on the bucket
+        bucket_model_path = os.path.join(BUCKET_URL, local_model_path[1:])
+        try:
+            bucket_run_paths = subprocess.check_output([
+                "gsutil", "ls", bucket_model_path
+            ]).decode()
+        except subprocess.CalledProcessError:
+            # This path doesn't exist yet
+            bucket_run_paths = ""
+
+        bucket_run_nums = []
+        for bucket_run_path in bucket_run_paths.split("\n"):
             try:
-                run_nums.append(int(dirname))
+                bucket_run_nums.append(
+                    int(os.path.basename(bucket_run_path.rstrip("/")))
+                )
             except ValueError:
                 pass
-        run_num = max(run_nums) if run_nums else 1
+        bucket_run_num = max(bucket_run_nums) + 1 if bucket_run_nums else 1
 
         print("Copying training results from run %d into bucket..." % (i + 1))
-        run_path = os.path.join(model_path, str(run_num))
-        bucket_path = os.path.join(BUCKET_URL, model_path[1:])
+        sys.stdout.flush()
+        local_run_path = os.path.join(local_model_path, str(local_run_num))
+        bucket_run_path = os.path.join(bucket_model_path, str(bucket_run_num))
         proc = subprocess.Popen([
-            "gsutil", "cp", "-r", run_path, bucket_path
+            "gsutil", "cp", "-r", local_run_path, bucket_run_path
         ])
         proc.wait()
 
