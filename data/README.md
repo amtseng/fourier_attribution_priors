@@ -41,7 +41,7 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/raw/`
 	- Note that because they are all the same cell type, there is a shared control
 
 - `BPNet_ChIPnexus/`
-	- Contains the called peaks from ChIP-nexus experiments
+	- Contains the called peaks and 5' count profile BigWigs from ChIP-nexus experiments
 	- The set of files used can be found [here](https://github.com/kundajelab/bpnet-manuscript/blob/master/src/bpnet-pipeline/ChIP-nexus.dataspec.yml), copied from `/oak/stanford/groups/akundaje/avsec/basepair/data/processed/comparison/data/chip-nexus/`
 
 - `DNase_bias/`
@@ -56,6 +56,11 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/raw/`
 	- `Vierstra_et_al_2020_Consensus_footprints_0p99.motifs.bed.gz` and `Vierstra_et_al_2020_Footprints_per_sample.0q01.tar.gz` downloaded from [Zenodo](https://zenodo.org/record/3603549) on 2 Feb 2020
 	- `footprints_per_sample/`
 		- Un-tarred footprints per sample from `Vierstra_et_al_2020_Footprints_per_sample.0q01.tar.gz`, subsequently compressed using `gzip`
+
+- `gc_content/`
+	- Contains the GC content in the genome, for hg38 and mm10
+	- These are copied from `/mnt/data/annotations/gc_content_tracks/{hg38,mm10}/gc_{hg38,mm10}_1000bp_flank.bigwig`
+	- Each base in the BigWig is the GC content of the 1kb region centered at that base
 
 ### `interim/`
 Links to `/mnt/lab_data2/amtseng/att_priors/data/interim/`
