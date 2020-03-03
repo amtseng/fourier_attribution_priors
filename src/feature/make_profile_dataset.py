@@ -284,9 +284,8 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         1. Optionally filters peaks to only retain a subset of chromosomes
         2. Optionally cuts down the set of peaks to a subset of high-confidence
             peaks
-        3. Removes any repeat peaks (i.e. same coordinate)
-        4. Computes the intervals for inputs being centered around the summits
-        5. Drops any intervals that would overrun chromosome boundaries
+        3. Computes the intervals for inputs being centered around the summits
+        4. Drops any intervals that would overrun chromosome boundaries
         Arguments:
             `peaks_table`: a table imported by `_import_peaks`
             `chrom_sizes_table`: a table imported by `_import_chrom_sizes`
@@ -301,14 +300,6 @@ class SamplingCoordsBatcher(torch.utils.data.sampler.Sampler):
         if peak_retention is not None:
             # Sort coordinates by confidence first
             peaks_table = peaks_table.sort_values(by="signal", ascending=False)
-
-        # Drop duplicate coordinates, keeping high-confidence peaks for ties; do
-        # this even if we are not dropping peaks by signal value
-        peaks_table = peaks_table.drop_duplicates(
-            subset=["chrom", "peak_start", "peak_end"], keep="first"
-        )
-        
-        if peak_retention is not None:
             # Keep only a subset of the peaks in the table
             keep_num = int(len(peaks_table) * peak_retention) if \
                 peak_retention < 1 else peak_retention
