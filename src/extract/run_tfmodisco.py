@@ -83,13 +83,10 @@ def main(shap_scores_hdf5, outfile, seqlet_outfile, center_cut_size):
     task_to_act_scores["task0"] = act_scores
 
     # Construct workflow pipeline
-    null_per_pos_scores = modisco.coordproducers.LaplaceNullDist(
-        num_to_samp=5000
-    )
     tfm_workflow = modisco.tfmodisco_workflow.workflow.TfModiscoWorkflow(
     	sliding_window_size=15,
     	flank_size=5,
-    	target_seqlet_fdr=0.15,
+        target_seqlet_fdr=0.05,
     	seqlets_to_patterns_factory=modisco.tfmodisco_workflow.seqlets_to_patterns.TfModiscoSeqletsToPatternsFactory(
     	    trim_to_window_size=15,
     	    initial_flank_to_add=5,
@@ -109,8 +106,7 @@ def main(shap_scores_hdf5, outfile, seqlet_outfile, center_cut_size):
         task_names=list(task_to_act_scores.keys()),
         contrib_scores=task_to_act_scores,
         hypothetical_contribs=task_to_hyp_scores,
-        one_hot=input_seqs,
-        null_per_pos_scores = null_per_pos_scores
+        one_hot=input_seqs
     )
 
     os.chdir(cwd)
