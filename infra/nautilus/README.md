@@ -8,7 +8,7 @@
 	- Configuration added to `~/.kube/config`
 		- Note that if there are existing configurations (e.g. GCP), the configuration will need to be added
 		- To merge several config files, do the following:
-			`KUBECONFIG=~/.kube/config:~/newkubeconfig kubectl config view --flatten > config`
+			`KUBECONFIG=~/.kube/gcp_config:~/.kube/naut_config kubectl config view --flatten > ~/.kube/config`
 		- To get all contexts: `kubectl config get-contexts`
 		- To switch to Nautilus context: `kubectl config use-context nautilus`
 	- It is okay to use the `kubectl` installed from GCP
