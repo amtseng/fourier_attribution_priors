@@ -382,7 +382,7 @@ def create_profile_explainer(
 
 
 def create_binary_explainer(
-    model, input_length, num_tasks, task_index=None, bg_size=10, seed=20200219
+    model, input_length, task_index=None, bg_size=10, seed=20200219
 ):
     """
     Given a trained `BinaryPredictor` model, creates a Shap DeepExplainer that
@@ -390,7 +390,6 @@ def create_binary_explainer(
     Arguments:
         `model`: a trained `BinaryPredictor`
         `input_length`: length of input sequence, I
-        `num_tasks`: number of tasks in model, T
         `task_index`: a specific task index (0-indexed) to perform explanations
             from (i.e. explanations will only be from the specified outputs); by
             default explains all tasks
@@ -542,7 +541,7 @@ if __name__ == "__main__":
     model = model.to(device)
     
     print("Creating explainer...")
-    explainer = create_binary_explainer(model, input_length, num_tasks)
+    explainer = create_binary_explainer(model, input_length)
 
     print("Computing importance scores...")
     input_seqs, output_vals, coords = input_func(pos_bins[:10])
