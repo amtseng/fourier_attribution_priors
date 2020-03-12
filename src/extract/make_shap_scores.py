@@ -16,7 +16,7 @@ import os
 def make_shap_scores(
     model_path, model_type, files_spec_path, input_length, num_tasks, out_path,
     reference_fasta, chrom_sizes, task_index=None, profile_length=1000,
-    controls=None, num_strands=2, chrom_set=None, batch_size=128, seed=None
+    controls=None, num_strands=2, chrom_set=None, batch_size=128
 ):
     """
     Computes SHAP scores over an entire dataset, and saves them as an HDF5 file.
@@ -39,7 +39,6 @@ def make_shap_scores(
         `chrom_set`: the set of chromosomes to compute SHAP scores for; if None,
             defaults to all chromosomes
         `batch_size`: batch size for SHAP score computation
-        `seed`: seed for sampling negatives.
     Creates/saves an HDF5 containing the SHAP scores and the input sequences.
     The HDF5 has the following keys:
         `coords_chrom`: an N-array of the coordinate chromosomes
@@ -146,7 +145,8 @@ def make_shap_scores(
 )
 @click.argument("files_spec_path")
 @click.option(
-    "--num-tasks", "-n", required=True, help="Number of tasks in model"
+    "--num-tasks", "-n", required=True, type=int,
+    help="Number of tasks in model"
 )
 @click.option(
     "--task-index", "-i", default=None, type=int,
@@ -186,11 +186,10 @@ def make_shap_scores(
 @click.option(
     "--batch-size", "-b", default=128, help="Batch size for computation"
 )
-@click.option("--seed", default=None, help="Seed for negative sampling")
 def main(
     model_path, model_type, files_spec_path, num_tasks, task_index, out_path,
     chrom_set, input_length, reference_fasta, chrom_sizes, profile_length,
-    controls, num_strands, batch_size, seed
+    controls, num_strands, batch_size
 ):
     if not input_length:
         if model_type == "binary":
@@ -204,7 +203,7 @@ def main(
     make_shap_scores(
         model_path, model_type, files_spec_path, input_length, num_tasks,
         out_path, reference_fasta, chrom_sizes, task_index, profile_length,
-        controls, num_strands, chrom_set, batch_size, seed
+        controls, num_strands, chrom_set, batch_size
     )
 
 if __name__ == "__main__":
