@@ -96,7 +96,7 @@ def make_shap_scores(
     # Create the explainer
     if model_type == "binary":
         explainer = compute_shap.create_binary_explainer(
-            model, input_length, num_tasks, task_index=task_index
+            model, input_length, task_index=task_index
         )
     else:
         explainer = compute_shap.create_profile_explainer(
