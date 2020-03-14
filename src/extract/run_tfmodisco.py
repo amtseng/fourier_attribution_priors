@@ -87,15 +87,15 @@ def main(shap_scores_hdf5, outfile, seqlet_outfile, center_cut_size):
 
     # Construct workflow pipeline
     tfm_workflow = modisco.tfmodisco_workflow.workflow.TfModiscoWorkflow(
-    	sliding_window_size=15,
-    	flank_size=5,
-        target_seqlet_fdr=0.05,
+    	sliding_window_size=21,
+    	flank_size=10,
+        target_seqlet_fdr=0.01,
     	seqlets_to_patterns_factory=modisco.tfmodisco_workflow.seqlets_to_patterns.TfModiscoSeqletsToPatternsFactory(
-    	    trim_to_window_size=15,
-    	    initial_flank_to_add=5,
-    	    kmer_len=5,
-    	    num_gaps=1,
-    	    num_mismatches=0,
+    	    trim_to_window_size=30,
+    	    initial_flank_to_add=10,
+    	    kmer_len=8,
+    	    num_gaps=3,
+    	    num_mismatches=2,
     	    final_min_cluster_size=60
     	)
     )
