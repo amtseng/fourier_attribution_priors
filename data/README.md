@@ -169,3 +169,10 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/processed/`
 		- Each resulting BED file has the coordinate of the original consensus motif, with the motif cluster matches in column 4, and the original cell line footprint coordinate in column 5
 	- `K562.bed.gz`
 		- Combined from `h.K562-DS52908.bed.gz`, `K562-DS15363.bed.gz`, `K562-DS16924.bed.gz`
+	- `K562_tencol.bed.gz`
+		- `K562.bed.gz`, reformatted into ENCODE 10-column NarrowPeak format
+			- The first 3 columns remain the same
+			- Columns 4 and 5 are combined with "|" and become column 4 (name) in the NarrowPeak file
+			- All other columns are made up
+		- Created using the following command:
+			- `zcat K562.bed.gz | awk '{print $1 "\t" $2 "\t" $3 "\t" $4 "|" $5 "\t.\t.\t.\t-1\t-1\t-1"}' | gzip > K562_tencol.bed.gz`
