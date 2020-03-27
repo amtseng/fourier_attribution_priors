@@ -123,9 +123,6 @@ def config(dataset):
     # Imported from make_profile_dataset
     input_depth = dataset["input_depth"]
 
-    # Imported from make_binary_dataset
-    negative_ratio = dataset["negative_ratio"]
-
 
 @train_ex.capture
 def create_model(
@@ -361,8 +358,7 @@ def run_epoch(
 @train_ex.capture
 def train_model(
     train_loader, val_loader, test_loader, num_epochs, learning_rate,
-    early_stopping, early_stop_hist_len, early_stop_min_delta, train_seed,
-    negative_ratio, _run
+    early_stopping, early_stop_hist_len, early_stop_min_delta, train_seed, _run
 ):
     """
     Trains the network for the given training and validation data.
@@ -389,6 +385,8 @@ def train_model(
 
     if early_stopping:
         val_epoch_loss_hist = []
+
+    best_val_epoch_loss, best_model_state = float("inf"), None
 
     for epoch in range(num_epochs):
         if torch.cuda.is_available:
@@ -428,6 +426,11 @@ def train_model(
             output_dir, "model_ckpt_epoch_%d.pt" % (epoch + 1)
         )
         util.save_model(model, savepath)
+   
+        # Save the model state dict of the epoch with the best validation loss
+        if val_epoch_loss < best_val_epoch_loss:
+            best_val_epoch_loss = val_epoch_loss
+            best_model_state = model.state_dict()
 
         # If losses are both NaN, then stop
         if np.isnan(train_epoch_loss) and np.isnan(val_epoch_loss):
@@ -448,17 +451,19 @@ def train_model(
 
     # Compute evaluation metrics and log them
     print("Computing test metrics:")
+    # Load in the state of the epoch with the best validation loss first
+    model.load_state_dict(best_model_state)
     batch_losses, corr_losses, att_losses, true_vals, pred_vals, coords, \
         input_grads, input_seqs = run_epoch(
             test_loader, "eval", model, 0, return_data=True
-            # Don't use attribution prior loss when computing final loss
     )
     _run.log_scalar("test_batch_losses", batch_losses)
     _run.log_scalar("test_corr_losses", corr_losses)
     _run.log_scalar("test_att_losses", att_losses)
 
+    neg_upsample_factor = test_loader.dataset.bins_batcher.neg_to_pos_imbalance
     metrics = binary_performance.compute_performance_metrics(
-        true_vals, pred_vals, negative_ratio 
+        true_vals, pred_vals, neg_upsample_factor
     )
     binary_performance.log_performance_metrics(metrics, "test", _run)
 

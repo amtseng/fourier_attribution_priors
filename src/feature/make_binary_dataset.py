@@ -148,6 +148,10 @@ class SamplingBinsBatcher(torch.utils.data.sampler.Sampler):
 
         self.pos_inds = np.where(pos_mask)[0]
         self.neg_inds = np.where(neg_mask)[0]
+        if len(self.pos_inds):
+            self.neg_to_pos_imbalance = len(self.neg_inds) / len(self.pos_inds)
+        else:
+            self.neg_to_pos_imbalance = float("inf")
 
         self.neg_per_batch = int(batch_size * neg_ratio / (neg_ratio + 1))
         self.pos_per_batch = batch_size - self.neg_per_batch

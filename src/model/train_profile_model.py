@@ -451,6 +451,8 @@ def train_model(
     if early_stopping:
         val_epoch_loss_hist = []
 
+    best_val_epoch_loss, best_model_state = float("inf"), None
+
     for epoch in range(num_epochs):
         if torch.cuda.is_available:
             torch.cuda.empty_cache()  # Clear GPU memory
@@ -495,6 +497,11 @@ def train_model(
         )
         util.save_model(model, savepath)
 
+        # Save the model state dict of the epoch with the best validation loss
+        if val_epoch_loss < best_val_epoch_loss:
+            best_val_epoch_loss = val_epoch_loss
+            best_model_state = model.state_dict()
+
         # If losses are both NaN, then stop
         if np.isnan(train_epoch_loss) and np.isnan(val_epoch_loss):
             break
@@ -518,11 +525,12 @@ def train_model(
         # (test_genome_loader, "genomewide")
     ]:
         print("Computing test metrics, %s:" % prefix)
+        # Load in the state of the epoch with the best validation loss first
+        model.load_state_dict(best_model_state)
         batch_losses, corr_losses, att_losses, prof_losses, count_losses, \
             true_profs, log_pred_profs, true_counts, log_pred_counts, coords, \
             input_grads, input_seqs = run_epoch(
                 data_loader, "eval", model, 0, return_data=True
-                # Don't use attribution prior loss when computing final loss
         )
         _run.log_scalar("test_%s_batch_losses" % prefix, batch_losses)
         _run.log_scalar("test_%s_corr_losses" % prefix, corr_losses)
