@@ -1,4 +1,4 @@
-# Use the official Google Cloud image as parent
+# Use the official Pytorch image as parent
 FROM pytorch/pytorch
 
 # Set the working directory
