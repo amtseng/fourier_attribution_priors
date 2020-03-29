@@ -90,6 +90,9 @@ def config(dataset):
     # to not soften; softness decays like 1 / (1 + x^c) after the limit
     fourier_att_prior_freq_limit_softness = 0.2
 
+    # Weight for L2 penalty on weights
+    l2_reg_loss_weight = 0
+
     # Number of training epochs
     num_epochs = 20
 
@@ -159,7 +162,7 @@ def model_loss(
     att_prior_loss_weight, att_prior_loss_weight_anneal_type,
     att_prior_loss_weight_anneal_speed, att_prior_grad_smooth_sigma,
     fourier_att_prior_freq_limit, fourier_att_prior_freq_limit_softness,
-    att_prior_loss_only, input_grads=None, status=None
+    att_prior_loss_only, l2_reg_loss_weight, input_grads=None, status=None
 ):
     """
     Computes the loss for the model.
@@ -185,28 +188,37 @@ def model_loss(
     corr_loss = model.correctness_loss(
         true_vals, logit_pred_vals, avg_class_loss
     )
+    final_loss = corr_loss
     
-    if not att_prior_loss_weight:
-        return corr_loss, (corr_loss, torch.zeros(1))
-   
-    att_prior_loss = model.fourier_att_prior_loss(
-        status, input_grads, fourier_att_prior_freq_limit,
-        fourier_att_prior_freq_limit_softness, att_prior_grad_smooth_sigma
-    )
-    
-    if att_prior_loss_weight_anneal_type is None:
-        weight = att_prior_loss_weight
-    elif att_prior_loss_weight_anneal_type == "inflate":
-        exp = np.exp(-att_prior_loss_weight_anneal_speed * epoch_num)
-        weight = att_prior_loss_weight * ((2 / (1 + exp)) - 1)
-    elif att_prior_loss_weight_anneal_type == "deflate":
-        exp = np.exp(-att_prior_loss_weight_anneal_speed * epoch_num)
-        weight = att_prior_loss_weight * exp
+    if att_prior_loss_weight > 0:
+        att_prior_loss = model.fourier_att_prior_loss(
+            status, input_grads, fourier_att_prior_freq_limit,
+            fourier_att_prior_freq_limit_softness, att_prior_grad_smooth_sigma
+        )
+        
+        if att_prior_loss_weight_anneal_type is None:
+            weight = att_prior_loss_weight
+        elif att_prior_loss_weight_anneal_type == "inflate":
+            exp = np.exp(-att_prior_loss_weight_anneal_speed * epoch_num)
+            weight = att_prior_loss_weight * ((2 / (1 + exp)) - 1)
+        elif att_prior_loss_weight_anneal_type == "deflate":
+            exp = np.exp(-att_prior_loss_weight_anneal_speed * epoch_num)
+            weight = att_prior_loss_weight * exp
 
-    if att_prior_loss_only:
-        final_loss = att_prior_loss
+        if att_prior_loss_only:
+            final_loss = att_prior_loss
+        else:
+            final_loss = final_loss + (weight * att_prior_loss)
     else:
-        final_loss = corr_loss + (weight * att_prior_loss)
+        att_prior_loss = torch.zeros(1)
+
+    # If necessary, add the L2 penalty
+    if l2_reg_loss_weight > 0:
+        l2_loss = util.place_tensor(torch.tensor(0).float())
+        for param in model.parameters():
+            if param.requires_grad_:
+                l2_loss = l2_loss + torch.sum(param * param)
+        final_loss = final_loss + (l2_reg_loss_weight * l2_loss)
 
     return final_loss, (corr_loss, att_prior_loss)
 
