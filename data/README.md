@@ -62,6 +62,10 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/raw/`
 	- These are copied from `/mnt/data/annotations/gc_content_tracks/{hg38,mm10}/gc_{hg38,mm10}_1000bp_flank.bigwig`
 	- Each base in the BigWig is the GC content of the 1kb region centered at that base
 
+- `ENCODE_TFChIP_cellline_peaks/`
+	- Cell-line specific peaks for specific TFs
+	- These are consist of only the optimal IDR peaks, downloaded using `download_ENCODE_TFChIP_cellline_peaks.py`
+
 ### `interim/`
 Links to `/mnt/lab_data2/amtseng/att_priors/data/interim/`
 - Raw data that has been processed to an intermediate form
@@ -97,6 +101,9 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/interim/`
 			- This uses `genomewide_labels` from [seqdataloader](https://github.com/kundajelab/seqdataloader/tree/master/seqdataloader)
 			- 2 HDF5s are generated: one contains binary labels for each task over genome bins, and the other contains the coordinates of the peaks underlying each bin
 	- Unlike `ENCODE_TFChIP/` and `ENCODE_DNase`, there is no `profile/` subdirectory, because the data came in BigWig form already
+
+- `ENCODE_TFChIP_cellline_peaks/`
+	- The same peak files from `raw/`, but consolidated and sorted using Bedtools
 
 ### `processed/`
 Links to `/mnt/lab_data2/amtseng/att_priors/data/processed/`
