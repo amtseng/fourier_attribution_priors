@@ -144,8 +144,15 @@ def create_simulated_fasta(
         chrom, summit = row["chrom"], row["summit_pos"]
         sim_seq = sim_seqs[i]
         start = summit - (seq_length // 2)
-        f[chrom][start : start + seq_length] = sim_seq
-        i += 1
+        # Using an if-statement instead of try/except makes this loop extremely
+        # slow for some reason
+        try:
+            f[chrom][start : start + seq_length] = sim_seq
+        except OSError:
+            # Didn't fit
+            pass
+        finally:
+            i += 1
 
     # Location of motif in each simulated sequence
     motif_len = len(motif_pfm)
