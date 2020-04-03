@@ -495,12 +495,14 @@ def run_training(
     val_loader = make_binary_dataset.create_data_loader(
         labels_hdf5, bin_labels_array, return_coords=True,
         chrom_set=val_chroms, peak_signals_npy_or_array=peak_signals_array,
-        peak_retention=None  # Use the whole validation set
+        peak_retention=None, gc_prob=0.5
+        # Use the whole validation set, without bias (if simulating sequences)
     )
     test_loader = make_binary_dataset.create_data_loader(
         labels_hdf5, bin_labels_array, return_coords=True,
         chrom_set=test_chroms, peak_signals_npy_or_array=peak_signals_array,
-        peak_retention=None  # Use the whole test set
+        peak_retention=None, gc_prob=0.5
+        # Use the whole test set, without bias (if simulating sequences)
     )
     train_model(train_loader, val_loader, test_loader)
 

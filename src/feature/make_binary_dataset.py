@@ -14,6 +14,18 @@ def config():
     # Path to reference genome FASTA
     reference_fasta = "/users/amtseng/genomes/hg38.fasta"
 
+    # If True, simulate sequences instead of using reference Fasta
+    simulate_seqs = False
+
+    # For simulating sequences, path to HOMER motif file
+    motif_path = None
+
+    # For simulating sequences, maximum random distance of motif from center
+    motif_bound = 100
+
+    # For simulating sequences, probability of GC for positive backgrounds
+    gc_prob = 0.5
+
     # Path to chromosome sizes
     chrom_sizes_tsv = "/users/amtseng/genomes/hg38.canon.chrom.sizes"
 
@@ -195,8 +207,8 @@ class BinDataset(torch.utils.data.IterableDataset):
     Arguments:
         `bin_batcher (SamplingBinsBatcher): maps indices to batches of
             bin indices
-        `coords_to_seq (CoordsToSeq)`: maps coordinates to 1-hot encoded
-            sequences
+        `seq_mapper (CoordsToSeq or StatusToSimulatedSeq)`: maps coordinates or
+            statuses to 1-hot encoded sequences
         `bins_to_vals (BinsToVals)`: maps bin indices to values to predict
         `revcomp`: whether or not to perform revcomp to the batch; this will
             double the batch size implicitly
@@ -204,11 +216,12 @@ class BinDataset(torch.utils.data.IterableDataset):
             that batch along with the 1-hot encoded sequences and values
     """
     def __init__(
-        self, bins_batcher, coords_to_seq, bins_to_vals, revcomp=False,
+        self, bins_batcher, seq_mapper, bins_to_vals, revcomp=False,
         return_coords=False
     ):
         self.bins_batcher = bins_batcher
-        self.coords_to_seq = coords_to_seq
+        assert type(seq_mapper) in (util.CoordsToSeq, util.StatusToSimulatedSeq)
+        self.seq_mapper = seq_mapper
         self.bins_to_vals = bins_to_vals
         self.revcomp = revcomp
         self.return_coords = return_coords
@@ -227,7 +240,10 @@ class BinDataset(torch.utils.data.IterableDataset):
         coords, vals = self.bins_to_vals(bin_inds_batch)
 
         # Map the batch of coordinates to 1-hot encoded sequences
-        seqs = self.coords_to_seq(coords, revcomp=self.revcomp)
+        if type(self.seq_mapper) is util.CoordsToSeq:
+            seqs = self.seq_mapper(coords, revcomp=self.revcomp)
+        else:
+            seqs = self.seq_mapper(status, revcomp=self.revcomp)
 
         if self.revcomp:
             vals = np.concatenate([vals, vals])
@@ -273,9 +289,10 @@ class BinDataset(torch.utils.data.IterableDataset):
 @dataset_ex.capture
 def create_data_loader(
     labels_hdf5_path, bin_labels_npy_or_array, batch_size, reference_fasta,
-    input_length, negative_ratio, peak_retention, num_workers, revcomp,
-    negative_seed, shuffle_seed, peak_signals_npy_or_array=None, chrom_set=None,
-    shuffle=True, return_coords=False
+    simulate_seqs, motif_path, motif_bound, gc_prob, input_length,
+    negative_ratio, peak_retention, num_workers, revcomp, negative_seed,
+    shuffle_seed, peak_signals_npy_or_array=None, chrom_set=None, shuffle=True,
+    return_coords=False
 ):
     """
     Creates an IterableDataset object, which iterates through batches of
@@ -323,14 +340,20 @@ def create_data_loader(
     if num_pos:
         print("\tNeg/Pos = %f" % (num_neg / num_pos))
 
-    # Maps set of coordinates to 1-hot encoding, padded
-    coords_to_seq = util.CoordsToSeq(
-        reference_fasta, center_size_to_use=input_length
-    )
+    if simulate_seqs:
+        # Maps set of 1s/0s to 1-hot encoding
+        seq_mapper = util.StatusToSimulatedSeq(
+            input_length, motif_path, motif_bound, gc_prob
+        )
+    else:
+        # Maps set of coordinates to 1-hot encoding, padded
+        seq_mapper = util.CoordsToSeq(
+            reference_fasta, center_size_to_use=input_length
+        )
     
     # Dataset
     dataset = BinDataset(
-        bins_batcher, coords_to_seq, bins_to_vals, revcomp=revcomp,
+        bins_batcher, seq_mapper, bins_to_vals, revcomp=revcomp,
         return_coords=return_coords
     )
 
