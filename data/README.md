@@ -174,12 +174,20 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/processed/`
 	- Made from combined footprints from multiple samples of the same cell line, then intersected with the consensus motif footprints
 		- `bedtools intersect -a <(zcat footprints_1.bed footprints_2.bed | bedtools sort) -b <(zcat Vierstra_et_al_2020_Consensus_footprints_0p99.motifs.bed.gz | awk '{if ($5 == "") $5 = "."; print $1 "\t" $2 "\t" $3 "\t" $5}') -wa -wb | awk '{print $6 "\t" $7 "\t" $8 "\t" $9 "\t" $1 ":" $2 "-" $3}'
 		- Each resulting BED file has the coordinate of the original consensus motif, with the motif cluster matches in column 4, and the original cell line footprint coordinate in column 5
-	- `K562.bed.gz`
+	- `K562_motifmatched.bed.gz`
 		- Combined from `h.K562-DS52908.bed.gz`, `K562-DS15363.bed.gz`, `K562-DS16924.bed.gz`
-	- `K562_tencol.bed.gz`
-		- `K562.bed.gz`, reformatted into ENCODE 10-column NarrowPeak format
+	- `K562_motifmatched_tencol.bed.gz`
+		- `K562_motifmatched.bed.gz`, reformatted into ENCODE 10-column NarrowPeak format
 			- The first 3 columns remain the same
 			- Columns 4 and 5 are combined with "|" and become column 4 (name) in the NarrowPeak file
 			- All other columns are made up
 		- Created using the following command:
-			- `zcat K562.bed.gz | awk '{print $1 "\t" $2 "\t" $3 "\t" $4 "|" $5 "\t.\t.\t.\t-1\t-1\t-1"}' | gzip > K562_tencol.bed.gz`
+			- `zcat K562_motifmatched.bed.gz | awk '{print $1 "\t" $2 "\t" $3 "\t" $4 "|" $5 "\t.\t.\t.\t-1\t-1\t-1"}' | gzip > K562_tencol.bed.gz`
+	- `K562.bed.gz`
+		- The set of all footprints, without intersection with motifs
+		- Simply a concatenation and sort of `h.K562-DS52908.bed.gz`, `K562-DS15363.bed.gz`, `K562-DS16924.bed.gz`
+			- Sorted and merged intervals
+	- `K562_tencol.bed.gz`
+		- `K562.bed.gz`, converted to 10-column NarrowPeak format
+		- Created using the following command:
+			- `zcat K562.bed.gz | awk '{print $1 "\t" $2 "\t" $3 "\t.\t.\t.\t.\t-1\t-1\t-1"}' | gzip > K562_tencol.bed.gz`
