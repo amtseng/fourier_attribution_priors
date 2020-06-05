@@ -86,7 +86,7 @@ def make_shap_scores(
     num_batches = int(np.ceil(num_pos / batch_size))
 
     # Allocate arrays to hold the results
-    coords_chrom = np.empty(num_pos, dtype=str)
+    coords_chrom = np.empty(num_pos, dtype=object)
     coords_start = np.empty(num_pos, dtype=int)
     coords_end = np.empty(num_pos, dtype=int)
     status = np.empty(num_pos, dtype=int)

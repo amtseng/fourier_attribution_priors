@@ -1,3 +1,6 @@
+# Adapted from https://github.com/kundajelab/deeplift/blob/16ef5dd05c3e05e9e5c7ec04d1d8a24fad046d96/deeplift/visualization/viz_sequence.py
+# Original authored by Avanti Shrikumar
+
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -74,7 +77,8 @@ def plot_weights_given_ax(ax, array,
                  highlight,
                  colors=default_colors,
                  plot_funcs=default_plot_funcs,
-                 ylabel=""):
+                 ylabel="",
+                 ylim=None):
     if len(array.shape)==3:
         array = np.squeeze(array)
     assert len(array.shape)==2, array.shape
@@ -120,6 +124,13 @@ def plot_weights_given_ax(ax, array,
             
     ax.set_xlim(-length_padding, array.shape[0]+length_padding)
     ax.xaxis.set_ticks(np.arange(0.0, array.shape[0]+1, subticks_frequency))
+
+    if ylim is not None:
+        # Use user-specified y-axis limits
+        min_neg_height, max_pos_height = ylim
+        assert min_neg_height <= 0
+        assert max_pos_height >= 0
+
     height_padding = max(abs(min_neg_height)*(height_padding_factor),
                          abs(max_pos_height)*(height_padding_factor))
     ax.set_ylim(min_neg_height-height_padding, max_pos_height+height_padding)
@@ -135,7 +146,8 @@ def plot_weights(array,
                  colors=default_colors,
                  plot_funcs=default_plot_funcs,
                  highlight={},
-                 ylabel=""):
+                 ylabel="",
+                 ylim=None):
     fig = plt.figure(figsize=figsize)
     ax = fig.add_subplot(111) 
     plot_weights_given_ax(ax=ax, array=array,
@@ -145,5 +157,6 @@ def plot_weights(array,
         colors=colors,
         plot_funcs=plot_funcs,
         highlight=highlight,
-        ylabel=ylabel)
+        ylabel=ylabel,
+        ylim=ylim)
     plt.show()

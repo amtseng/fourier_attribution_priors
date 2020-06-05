@@ -127,8 +127,10 @@ def get_positive_binary_bins(files_spec_path, task_ind=None, chrom_set=None):
     else:
         # Load from the full HDF5
         with h5py.File(files_spec["labels_hdf5"], "r") as f:
-            chroms = f["chrom"][:]
             vals = f["values"][:, task_ind]
-            chrom_mask = np.isin(chroms, np.array(chrom_set).astype(bytes))
-            pos_mask = vals == 1
-        return np.where(chrom_mask & pos_mask)[0]
+            mask = vals == 1
+            if chrom_set is not None:
+                chroms = f["chrom"][:]
+                chrom_mask = np.isin(chroms, np.array(chrom_set).astype(bytes))
+                mask = chrom_mask & mask
+        return np.where(mask)[0]

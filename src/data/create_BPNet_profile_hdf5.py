@@ -147,7 +147,7 @@ def main(base_path, chrom_sizes_path, out_path, chunk_size):
 
     bigwig_paths = fetch_bigwig_paths(base_path)
     print("Found %d TFs/tasks" % (len(bigwig_paths) - 1))
-    os.makedirs(os.path.dirname(out_path))
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     create_hdf5(bigwig_paths, chrom_sizes_path, out_path, chunk_size)
 
 
