@@ -281,6 +281,69 @@ class BinaryPredictor(torch.nn.Module):
         else:
             return place_tensor(torch.zeros(1))
 
+    def smoothness_att_prior_loss(self, status, input_grads):
+        """
+        Computes an attribution prior loss for some given training examples,
+        by rewarding smoothness between neighbors' attributions.
+        Arguments:
+            `status`: a B-tensor, where B is the batch size; each entry is 1 if
+                that example is to be treated as a positive example, and 0
+                otherwise
+            `input_grads`: a B x L x D tensor, where B is the batch size, L is
+                the length of the input, and D is the dimensionality of each
+                input base; this needs to be the gradients of the input with
+                respect to the output (for multiple tasks, this gradient needs
+                to be aggregated); this should be *gradient times input*
+        Returns a single scalar Tensor consisting of the attribution loss for
+        the batch.
+        """
+        abs_grads = torch.sum(torch.abs(input_grads), dim=2)
+
+        # Only do the positives
+        pos_grads = abs_grads[status == 1]
+
+        # Loss for positives
+        if pos_grads.nelement():
+            # Compute neighbor differences
+            diffs = torch.abs(pos_grads[:, 1:] - pos_grads[:, :-1])
+            return torch.mean(torch.sum(diffs, dim=1))
+        else:
+            return place_tensor(torch.zeros(1))
+
+    def sparsity_att_prior_loss(self, status, input_grads):
+        """
+        Computes an attribution prior loss for some given training examples,
+        by rewarding sparsity of the attributions.
+        Arguments:
+            `status`: a B-tensor, where B is the batch size; each entry is 1 if
+                that example is to be treated as a positive example, and 0
+                otherwise
+            `input_grads`: a B x L x D tensor, where B is the batch size, L is
+                the length of the input, and D is the dimensionality of each
+                input base; this needs to be the gradients of the input with
+                respect to the output (for multiple tasks, this gradient needs
+                to be aggregated); this should be *gradient times input*
+        Returns a single scalar Tensor consisting of the attribution loss for
+        the batch.
+        """
+        abs_grads = torch.sum(torch.abs(input_grads), dim=2)
+
+        # Only do the positives
+        pos_grads = abs_grads[status == 1]  # Shape: B' x L
+
+        # Loss for positives
+        if pos_grads.nelement():
+            # Compute all pairwise differences
+            seq_len = pos_grads.size(1)
+            seq_matrix = pos_grads.repeat(1, seq_len).view(-1, seq_len, seq_len)
+            diffs = torch.abs(seq_matrix - seq_matrix.transpose(1, 2))
+
+            norm = seq_len * torch.sum(pos_grads, dim=1)
+
+            return -torch.mean(torch.sum(diffs, dim=(1, 2)) / norm)
+        else:
+            return place_tensor(torch.zeros(1))
+
 
 def binary_logits_to_probs(logit_pred_vals):
     """

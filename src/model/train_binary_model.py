@@ -195,6 +195,9 @@ def model_loss(
             status, input_grads, fourier_att_prior_freq_limit,
             fourier_att_prior_freq_limit_softness, att_prior_grad_smooth_sigma
         )
+
+        # att_prior_loss = model.smoothness_att_prior_loss(status, input_grads)
+        # att_prior_loss = model.sparsity_att_prior_loss(status, input_grads)
         
         if att_prior_loss_weight_anneal_type is None:
             weight = att_prior_loss_weight
