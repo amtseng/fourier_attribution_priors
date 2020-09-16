@@ -670,7 +670,7 @@ class ProfilePredictorWithoutControls(ProfilePredictor):
         count_one_conv_out = self.count_one_conv(count_dense_out)
         # Shape: B x ST x 1
         count_pred = count_one_conv_out.view(
-            batch_size, self.num_tasks, num_strands, -1
+            batch_size, self.num_tasks, self.num_strands, -1
         )
         # Shape: B x T x S x 1
         count_pred = torch.squeeze(count_pred, dim=3)  # Shape: B x T x S
