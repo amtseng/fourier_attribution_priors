@@ -1,7 +1,7 @@
 from model.util import place_tensor
 import model.profile_models as profile_models
 import model.binary_models as binary_models
-from deeplift.dinuc_shuffle import dinuc_shuffle
+from extract.dinuc_shuffle import dinuc_shuffle
 import shap
 import torch
 import numpy as np
@@ -31,18 +31,14 @@ def create_input_seq_background(
     original input sequence. If `input_seq` is None, then a G x I x 4 tensor of
     all 0s is returned.
     """
-    input_seq_bg_shape = (bg_size, input_length, 4)
-
     if input_seq is None:
+        input_seq_bg_shape = (bg_size, input_length, 4)
         return place_tensor(torch.zeros(input_seq_bg_shape)).float()
 
     # Do dinucleotide shuffles
     input_seq_np = input_seq.cpu().numpy()
-    input_seq_bg_np = np.empty(input_seq_bg_shape)
     rng = np.random.RandomState(seed)
-    for i in range(bg_size):
-        input_seq_shuf = dinuc_shuffle(input_seq_np, rng=rng)
-        input_seq_bg_np[i] = input_seq_shuf
+    input_seq_bg_np = dinuc_shuffle(input_seq_np, bg_size, rng=rng)
     return place_tensor(torch.tensor(input_seq_bg_np)).float()
 
 
