@@ -170,7 +170,7 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/processed/`
 		- `config/`
 			- Training configuration files like paths to training data in `labels/`, and parameter configurations like number of tasks
 
-- `DNase_footprints`
+- `DNase_footprints/`
 	- Made from combined footprints from multiple samples of the same cell line, then intersected with the consensus motif footprints
 		- `bedtools intersect -a <(zcat footprints_1.bed footprints_2.bed | bedtools sort) -b <(zcat Vierstra_et_al_2020_Consensus_footprints_0p99.motifs.bed.gz | awk '{if ($5 == "") $5 = "."; print $1 "\t" $2 "\t" $3 "\t" $5}') -wa -wb | awk '{print $6 "\t" $7 "\t" $8 "\t" $9 "\t" $1 ":" $2 "-" $3}'
 		- Each resulting BED file has the coordinate of the original consensus motif, with the motif cluster matches in column 4, and the original cell line footprint coordinate in column 5
@@ -191,3 +191,6 @@ Links to `/mnt/lab_data2/amtseng/att_priors/data/processed/`
 		- `K562.bed.gz`, converted to 10-column NarrowPeak format
 		- Created using the following command:
 			- `zcat K562.bed.gz | awk '{print $1 "\t" $2 "\t" $3 "\t.\t.\t.\t.\t-1\t-1\t-1"}' | gzip > K562_tencol.bed.gz`
+
+- `basset/`
+	- Model weights downloaded from [here](https://zenodo.org/record/1466068/files/pretrained_model_reloaded_th.pth)
