@@ -217,7 +217,7 @@ def get_binary_model_ism(
 if __name__ == "__main__":
     import extract.data_loading as data_loading
     import model.util as model_util
-    from deeplift.visualization import viz_sequence
+    import plot.viz_sequence as viz_sequence
 
     reference_fasta = "/users/amtseng/genomes/hg38.fasta"
     chrom_set = ["chr21"]
