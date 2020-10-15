@@ -1,4 +1,62 @@
-# Fourier-transform-based attribution priors for genomics deep learning
+# Fourier-transform-based attribution priors for deep learning in genomics
+
+<p align="center">
+    <img src="references/thumbnail.png" width=400px />
+</p>
+
+### Introduction
+
+Deep learning models in genomics can achieve state-of-the-art performance in predicting biological function from DNA sequences, but these models suffer in interpretability. If we examine the input sequence attributions (i.e. importance scores), they tend to be noisy and irreproducible across random seeds. This seriously hinders our ability to interpret these models and figure out the sequence features that drive biology.
+
+To address these issues, deep learning models can be trained with an attribution prior, which encourages the model at training-time to learn cleaner attributions, thereby making the models more interpretable. Here, we devise an attribution prior based on Fourier transforms to aid in the interpretability of deep learning models for genomics (although such a prior might be uesful in other fields/applications, as well).
+
+See the [corresponding paper](https://www.biorxiv.org/content/10.1101/2020.06.11.147272v1) for more information.
+
+This repository houses all of the code used to generate the results for the paper, including code that fetches data, processes data, trains models, implements the attribution prior, and generates all figures in the paper.
+
+### Results
+
+**Figure 1**
+<p align="center">
+    <img src="references/figure_1.png" width=1000px />
+</p>
+
+Models trained with the standard approach (left) irreproducibly miss motifs in the underlying sequence and noisily rely on irrelevant regions of the input. When training with the Fourier-based attribution prior (right), models consistently and cleanly identify the driving motifs. The examples shown are from binary binding models of the SPI1 TF from TF ChIP-seq experiments.
+
+**Figure 2**
+<p align="center">
+    <img src="references/figure_2.png" width=800px />
+</p>
+
+We train profile models to predict chromatin accessibility in the K562 cell line. At a particular K562 open chromatin peak, we show the attributions across the entire input sequence, and the base-pair-level attributions around the summit region. The model trained with the Fourier-based prior cleanly highlights 3 motifs centered around the peak summit, matching relevant transcription factors (left to right: SP1, CLOCK, and CTCF).
+
+For more results/analyses, see the [corresponding paper](https://www.biorxiv.org/content/10.1101/2020.06.11.147272v1).
+
+### Getting started
+
+For a standalone example of the Fourier-based attribution prior, [this Jupyter notebook](notebooks/fourier_prior_example.ipynb) will walk you through how to implement and use the prior.
+
+To run this notebook, you will need the following libraries. These versions are the exact ones that I have. You can probably get away with slightly different versions of some of these libraries, but if the versioning is too different, it may break some parts of the notebook.
+
+- Python 3.7.4
+- PyTorch 1.3.0
+- NumPy 1.17.2
+- Pandas 0.25.2
+- Scipy 1.3.1
+- scikit-learn 0.21.3
+- Matplotlib 3.1.1
+- pyfaidx 0.5.5.2
+- tqdm 4.41.1
+
+The Fourier-based attribution prior is currently only implemented in PyTorch.
+
+### Citing this work
+
+If you found Fourier-based attribution priors to be helpful for your work, please cite the following:
+
+Tseng, A. M., Shrikumar, A. & Kundaje, A. Fourier-transform-based attribution priors improve the interpretability and stability of deep learning models for genomics. bioRxiv 2020.06.11.147272 (2020) [doi:10.1101/2020.06.11.147272](https://doi.org/10.1101/2020.06.11.147272).
+
+[\[BibTeX\]](references/biorxiv.bib)
 
 ### Description of files
 
@@ -11,9 +69,11 @@
 │   └── README.md    <- Description of data
 ├── models
 │   └── trained_models    <- Trained models
-├── notebooks    <- Jupyter notebooks that explore data and plot results
+├── infra    <- Code needed to run training jobs on the cloud (Google Cloud Platform or Nautilus)
+├── notebooks    <- Jupyter notebooks that explore data, plot results, and generate figures for the paper
 ├── README.md    <- This file
 ├── results    <- Saved results
+├── references    <- Explanatory materials for this README file
 └── src    <- Source code
     ├── data
     │   ├── create_binary_bins.py    <- Synthesize bin-level (aggregate) labels from task-specific binary labels
@@ -34,6 +94,7 @@
     │   ├── compute_predictions.py    <- Compute model predictions and gradients from a trained model
     │   ├── compute_shap.py    <- Compute DeepSHAP importance scores from a trained model
     │   ├── data_loading.py    <- Data loading utilities to easily get model input data for a coordinate/bin
+    │   ├── dinuc_shuffle.py    <- Shuffling sequences, preserving dinucleotide frequencies
     │   ├── extract_bed_interval.sh    <- Extract a set of BED intervals overlapping a range
     │   ├── __init__.py
     │   ├── make_shap_scores.py    <- Generate DeepSHAP scores over all positive examples
