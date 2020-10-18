@@ -8,6 +8,6 @@ install-dependencies:
 
 install-interpet:
 	mkdir -p ~/lib
-	cd ~/lib && git clone https://github.com/atseng95/shap.git && cd shap && pip install -e .
+	cd ~/lib && git clone https://github.com/amtseng/shap.git && cd shap && pip install -e .
 	cd ~/lib && git clone https://github.com/kundajelab/tfmodisco.git && cd tfmodisco && git checkout v0.5.5.5 && pip install -e .
 	pip install psutil
