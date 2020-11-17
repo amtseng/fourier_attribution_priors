@@ -10,7 +10,7 @@ Deep learning models in genomics can achieve state-of-the-art performance in pre
 
 To address these issues, deep learning models can be trained with an attribution prior, which encourages the model at training-time to learn cleaner attributions, thereby making the models more interpretable. Here, we devise an attribution prior based on Fourier transforms to aid in the interpretability of deep learning models for genomics (although such a prior might be uesful in other fields/applications, as well).
 
-See the [corresponding paper](https://www.biorxiv.org/content/10.1101/2020.06.11.147272v1) for more information.
+See the [corresponding paper](https://proceedings.neurips.cc/paper/2020/hash/1487987e862c44b91a0296cf3866387e-Abstract.html) for more information.
 
 This repository houses all of the code used to generate the results for the paper, including code that fetches data, processes data, trains models, implements the attribution prior, and generates all figures in the paper.
 
@@ -30,16 +30,18 @@ Models trained with the standard approach (left) irreproducibly miss motifs in t
 
 We train profile models to predict chromatin accessibility in the K562 cell line. At a particular K562 open chromatin peak, we show the attributions across the entire input sequence, and the base-pair-level attributions around the summit region. The model trained with the Fourier-based prior cleanly highlights 3 motifs centered around the peak summit, matching relevant transcription factors (left to right: SP1, CLOCK, and CTCF).
 
-For more results/analyses, see the [corresponding paper](https://www.biorxiv.org/content/10.1101/2020.06.11.147272v1).
+For more results/analyses, see the [corresponding paper](https://proceedings.neurips.cc/paper/2020/hash/1487987e862c44b91a0296cf3866387e-Abstract.html).
 
 ### Getting started
 
-For a standalone example of the Fourier-based attribution prior, [this Jupyter notebook](notebooks/fourier_prior_example.ipynb) will walk you through how to implement and use the prior.
+There are two standalone Jupyter notebooks that will walk you through how to implement and use the Fourier-based attribution prior. They are implemented in PyTorch or Keras/TensorFlow 2.
 
-To run this notebook, you will need the following libraries. These versions are the exact ones that I have. You can probably get away with slightly different versions of some of these libraries, but if the versioning is too different, it may break some parts of the notebook.
+- [Link to PyTorch example](notebooks/fourier_prior_example_pytorch.ipynb)
+- [Link to Keras/TensorFlow 2 example](notebooks/fourier_prior_example_keras.ipynb)
+
+Below are the libraries needed to run these example notebooks. These are the exact versions that I have. You can probably get away with slightly different versions of some of these libraries, but if the versioning is too different, it may break some parts of the notebook.
 
 - Python 3.7.4
-- PyTorch 1.3.0
 - NumPy 1.17.2
 - Pandas 0.25.2
 - Scipy 1.3.1
@@ -47,14 +49,15 @@ To run this notebook, you will need the following libraries. These versions are 
 - Matplotlib 3.1.1
 - pyfaidx 0.5.5.2
 - tqdm 4.41.1
-
-The Fourier-based attribution prior is currently only implemented in PyTorch.
+- PyTorch 1.3.0 (for PyTorch example)
+- TensorFlow 2.3.1 (for Keras/TensorFlow 2 example)
+- Keras 2.4.3 (for Keras/TensorFlow 2 example)
 
 ### Citing this work
 
 If you found Fourier-based attribution priors to be helpful for your work, please cite the following:
 
-Tseng, A. M., Shrikumar, A. & Kundaje, A. Fourier-transform-based attribution priors improve the interpretability and stability of deep learning models for genomics. bioRxiv 2020.06.11.147272 (2020) [doi:10.1101/2020.06.11.147272](https://doi.org/10.1101/2020.06.11.147272).
+Tseng, A. M., Shrikumar, A. & Kundaje, A. Fourier-transform-based attribution priors improve the interpretability and stability of deep learning models for genomics. NeurIPS (2020) [Link](https://proceedings.neurips.cc/paper/2020/hash/1487987e862c44b91a0296cf3866387e-Abstract.html).
 
 [\[BibTeX\]](references/biorxiv.bib)
 
