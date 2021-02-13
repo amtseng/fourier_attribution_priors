@@ -59,7 +59,7 @@ If you found Fourier-based attribution priors to be helpful for your work, pleas
 
 Tseng, A. M., Shrikumar, A. & Kundaje, A. Fourier-transform-based attribution priors improve the interpretability and stability of deep learning models for genomics. NeurIPS (2020) [Link](https://proceedings.neurips.cc/paper/2020/hash/1487987e862c44b91a0296cf3866387e-Abstract.html).
 
-[\[BibTeX\]](references/biorxiv.bib)
+[\[BibTeX\]](references/bibtex.bib)
 
 ### Description of files
 
